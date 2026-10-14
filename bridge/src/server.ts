@@ -69,6 +69,7 @@ interface PendingPermission {
   via?: ReplyVia;
   settled: boolean;
   timer?: NodeJS.Timeout;
+  deadline?: number;
   resolve: (decision: Decision) => void;
 }
 
@@ -194,6 +195,15 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     broadcast({ type: 'state', state: agg.state, detail: agg.detail, sessions: agg.sessions });
   };
 
+  // 计时超过 1 秒后再发（例如设备重连后补发），只给剩下的秒数，设备倒计时和桥接程序对得上；
+  // 刚显示的头 1 秒内（比如紧接着更新 queue_len）仍发原来的数字
+  const remainingTimeout = (item: PendingPermission): number => {
+    if (item.deadline === undefined) return item.timeout_s;
+    const leftMs = item.deadline - Date.now();
+    if (item.timeout_s * 1000 - leftMs < 1000) return item.timeout_s;
+    return Math.max(1, Math.ceil(leftMs / 1000));
+  };
+
   const permissionMessage = (item: PendingPermission) => {
     const message: {
       type: 'permission';
@@ -210,7 +220,7 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
       source: item.source,
       tool: item.tool,
       summary: item.summary,
-      timeout_s: item.timeout_s,
+      timeout_s: remainingTimeout(item),
       queue_len: queue.length,
     };
     if (item.project !== undefined) message.project = item.project;
@@ -251,6 +261,7 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
 
   // `timeout_s` is seconds. The pi plugin default is 120, so this fires at 120_000 ms.
   const arm = (item: PendingPermission) => {
+    item.deadline = Date.now() + item.timeout_s * 1000;
     item.timer = setTimeout(() => onTimeout(item), item.timeout_s * 1000);
   };
 

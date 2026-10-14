@@ -872,6 +872,27 @@ describe('pi-buddy bridge', () => {
     assert.ok(lines.some((line) => line.includes('permission reply deny via=unknown')));
   });
 
+  it('设备重连后补发的请示只给剩余秒数', async () => {
+    await withBridge(async (bridge) => {
+      const first = openDevice(bridge.port, bridge.token);
+      await first.ready;
+      const pending = postJson(bridge.port, '/v1/permission', permissionBody('reconnect-job', 10)).then((res) =>
+        res.json(),
+      );
+      const shown = await first.waitFor((message) => message.type === 'permission');
+      assert.equal(shown.timeout_s, 10);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const second = openDevice(bridge.port, bridge.token, 'dev-second');
+      await second.ready;
+      const resent = await second.waitFor((message) => message.type === 'permission' && message.id === shown.id);
+      assert.ok(typeof resent.timeout_s === 'number' && resent.timeout_s >= 8 && resent.timeout_s <= 9);
+      second.ws.send(JSON.stringify({ type: 'permission_reply', id: shown.id, decision: 'deny' }));
+      assert.deepEqual(await pending, { decision: 'deny' });
+      first.ws.close();
+      second.ws.close();
+    });
+  });
+
   it('permission 的 project 合法时原样转发，非法时丢掉且审批继续', async () => {
     await withBridge(async (bridge) => {
       const device = openDevice(bridge.port, bridge.token);
