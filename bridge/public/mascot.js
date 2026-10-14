@@ -16,7 +16,7 @@ export const TEXT_X = 14;
 export const SCREEN_W = 320;
 /** Status-bar text may run from TEXT_X to the right edge of the 320px screen. */
 export const TEXT_MAX_WIDTH = SCREEN_W - TEXT_X;
-export const PERMISSION_HINT = '短按允许 · 按住拒绝';
+export const PERMISSION_HINT = 'BOOT：按住允许，短按拒绝';
 
 const P_ROWS = [
   '#########...',

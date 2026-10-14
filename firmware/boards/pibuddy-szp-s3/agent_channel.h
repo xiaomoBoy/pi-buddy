@@ -40,7 +40,7 @@ public:
     // 这次按键是不是在请示出现之后才按下的；只有这样的按键才算审批（提前按住的不算）
     bool ConsumeArmed() { return armed_.exchange(false); }
 
-    static constexpr int kHoldMs = 1500;   // 按住多久算“拒绝”，与板型里的 long_press_time 一致
+    static constexpr int kHoldMs = 1000;   // 按住多久算“允许”，与板型里的 long_press_time 一致
 
 private:
     AgentChannel() = default;
@@ -77,6 +77,11 @@ private:
     std::string perm_tool_;
     std::string perm_summary_;
     int queue_len_ = 0;
+    int64_t perm_deadline_us_ = 0;
+    std::string flash_text_;           // 回复审批后短暂显示“已允许”“已拒绝”
+    bool flash_allow_ = false;
+    int64_t flash_until_us_ = 0;
+    std::string corner_;
 
     int64_t last_activity_us_ = 0;
     int64_t last_pong_us_ = 0;

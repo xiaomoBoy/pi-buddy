@@ -335,6 +335,9 @@ void AgentChannel::HandleMessage(const std::string& text) {
             perm_id_.clear();
         }
         if (id.empty()) return;
+        flash_allow_ = text == kCmdAllow;
+        flash_text_ = flash_allow_ ? "已允许，pi 继续执行" : "已拒绝，命令不会执行";
+        flash_until_us_ = Now() + 1500LL * 1000;
         cJSON* root = cJSON_CreateObject();
         cJSON_AddStringToObject(root, "type", "permission_reply");
         cJSON_AddStringToObject(root, "id", id.c_str());
@@ -389,6 +392,10 @@ void AgentChannel::HandleMessage(const std::string& text) {
             perm_summary_ = JsonString(root, "summary");
             cJSON* q = cJSON_GetObjectItem(root, "queue_len");
             queue_len_ = cJSON_IsNumber(q) ? q->valueint : 0;
+            if (fresh) {
+                cJSON* t = cJSON_GetObjectItem(root, "timeout_s");
+                perm_deadline_us_ = Now() + (int64_t)(cJSON_IsNumber(t) ? t->valuedouble : 120) * 1000 * 1000;
+            }
         }
         if (fresh) PlaySoundWhenIdle("popup");
         last_activity_us_ = Now();
@@ -420,6 +427,8 @@ void AgentChannel::Refresh() {
     Face face = Face::Idle;
     std::string status, detail;
     uint32_t accent = kMuted;
+    bool flashing = !has_perm && Now() < flash_until_us_;
+    std::string corner;
     if (pairing_) {
         status = "配对码 " + pair_code_;
         detail = "在 Mac 上运行 pi-buddy-bridge pair " + pair_code_;
@@ -427,9 +436,15 @@ void AgentChannel::Refresh() {
     } else if (has_perm) {
         face = Face::Permission;
         status = tool + " · " + summary;
-        detail = "也可以短按 BOOT 允许 · 按住拒绝";
-        if (queue_len > 0) detail += " · 还有 " + std::to_string(queue_len) + " 条";
+        detail = "BOOT：按住允许，短按拒绝";   // 一行最多放 14 个字左右
         accent = kAmber;
+        int64_t left = (perm_deadline_us_ - Now()) / 1000000;
+        corner = std::to_string(left > 0 ? left : 0) + "s";
+        if (queue_len > 0) corner += "  +" + std::to_string(queue_len);
+    } else if (flashing) {
+        face = flash_allow_ ? Face::Done : Face::Idle;
+        status = flash_text_;
+        accent = flash_allow_ ? kTeal : kCoral;
     } else if (sleeping_) {
         face = Face::Sleep;
         status = "睡着了";
@@ -451,6 +466,10 @@ void AgentChannel::Refresh() {
     if (key != rendered_) {
         screen_.Render(face, status, detail, accent);
         rendered_ = key;
+    }
+    if (corner != corner_) {
+        screen_.SetCorner(corner);
+        corner_ = corner;
     }
     // 有审批时一定显示；否则只在小智待机（没在听、没在说）时显示 P 仔
     bool show = has_perm || ((authed_ || pairing_) && device_state == kDeviceStateIdle);

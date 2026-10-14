@@ -25,6 +25,8 @@ public:
     void OnDecision(std::function<void(bool allow)> callback) { on_decision_ = std::move(callback); }
     // 按住 BOOT 时的进度条：hold_ms 内填满，填满即拒绝；松开提前结束
     void ShowHold(bool show, int hold_ms);
+    // 左上角的小字（请示时显示剩余秒数），空字符串表示不显示
+    void SetCorner(const std::string& text);
 
 private:
     void DrawMascot(Face face);
@@ -39,6 +41,8 @@ private:
     lv_obj_t* detail_ = nullptr;
     uint16_t* pixels_ = nullptr;
     lv_obj_t* buttons_ = nullptr;
+    lv_obj_t* corner_ = nullptr;
+    uint32_t buttons_shown_at_ = 0;   // lv_tick；按钮刚出现的 0.4 秒内的点击不算
     lv_obj_t* hold_ = nullptr;
     lv_obj_t* hold_bar_ = nullptr;
     bool visible_ = false;

@@ -105,12 +105,12 @@ private:
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
-            // P 仔在请示时，短按 BOOT 是“允许”
+            // P 仔在请示时，短按 BOOT 是“拒绝”：按到一半松手、不小心碰到，都落到安全的一边
             auto& agent = AgentChannel::GetInstance();
             if (agent.HasPendingPermission()) {
-                // 请示出现前就按下的那一下不算，免得误“允许”
+                // 请示出现前就按下的那一下不算
                 if (agent.ConsumeArmed()) {
-                    agent.ReplyPermission(true);
+                    agent.ReplyPermission(false);
                 }
                 return;
             }
@@ -129,11 +129,11 @@ private:
             }
         });
 
-        // P 仔在请示时，按住 BOOT（1.5 秒，屏幕上有进度条）是“拒绝”
+        // P 仔在请示时，按住 BOOT 直到进度条走满（1 秒）才是“允许”
         boot_button_.OnLongPress([this]() {
             auto& agent = AgentChannel::GetInstance();
             if (agent.HasPendingPermission() && agent.ConsumeArmed()) {
-                agent.ReplyPermission(false);
+                agent.ReplyPermission(true);
             }
         });
 

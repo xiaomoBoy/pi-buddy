@@ -131,12 +131,12 @@ void BuddyScreen::Init(Display* display) {
     // 请示时的两个触摸按钮，放在 P 的脚下面（P 的最下一行到 y=156）
     buttons_ = lv_obj_create(root_);
     lv_obj_remove_style_all(buttons_);
-    lv_obj_set_size(buttons_, kWidth, 34);
-    lv_obj_set_pos(buttons_, 0, 159);
+    lv_obj_set_size(buttons_, kWidth, 38);
+    lv_obj_set_pos(buttons_, 0, 157);
     lv_obj_remove_flag(buttons_, LV_OBJ_FLAG_SCROLLABLE);
     auto make_button = [this](int x, uint32_t color, const char* text, bool allow) {
         auto btn = lv_button_create(buttons_);
-        lv_obj_set_size(btn, 136, 34);
+        lv_obj_set_size(btn, 148, 38);
         lv_obj_set_pos(btn, x, 0);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -148,13 +148,21 @@ void BuddyScreen::Init(Display* display) {
         lv_obj_center(label);
         lv_obj_add_event_cb(btn, [](lv_event_t* e) {
             auto self = static_cast<BuddyScreen*>(lv_event_get_user_data(e));
+            // 请示刚出现时手指可能正好落在按钮上，这一下不算
+            if (lv_tick_elaps(self->buttons_shown_at_) < 400) return;
             bool allow = lv_obj_get_user_data(static_cast<lv_obj_t*>(lv_event_get_target(e))) != nullptr;
             if (self->on_decision_) self->on_decision_(allow);
         }, LV_EVENT_CLICKED, this);
         lv_obj_set_user_data(btn, allow ? (void*)1 : nullptr);
     };
-    make_button(16, kDeep, "允许", true);
-    make_button(168, kCoral, "拒绝", false);
+    make_button(8, kDeep, "允许", true);
+    make_button(164, kCoral, "拒绝", false);
+
+    corner_ = lv_label_create(root_);
+    lv_obj_set_style_text_font(corner_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(corner_, lv_color_hex(kMuted), 0);
+    lv_obj_set_pos(corner_, 10, 6);
+    lv_label_set_text(corner_, "");
     lv_obj_add_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
 
     // 按住 BOOT 时盖在按钮上面的进度条
@@ -166,14 +174,14 @@ void BuddyScreen::Init(Display* display) {
     lv_obj_set_style_bg_opa(hold_, LV_OPA_COVER, 0);
     lv_obj_remove_flag(hold_, LV_OBJ_FLAG_SCROLLABLE);
     auto hold_label = lv_label_create(hold_);
-    lv_label_set_text(hold_label, "松开 = 允许 · 按到底 = 拒绝");
+    lv_label_set_text(hold_label, "按住到底 = 允许 · 松开 = 拒绝");
     lv_obj_set_style_text_color(hold_label, lv_color_hex(kCream), 0);
     lv_obj_set_pos(hold_label, 16, 0);
     hold_bar_ = lv_bar_create(hold_);
     lv_obj_set_size(hold_bar_, kWidth - 32, 10);
     lv_obj_set_pos(hold_bar_, 16, 26);
     lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kBar), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kCoral), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kTeal), LV_PART_INDICATOR);
     lv_bar_set_range(hold_bar_, 0, 1000);
     lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
 
@@ -291,11 +299,18 @@ void BuddyScreen::Render(Face face, const std::string& status, const std::string
     lv_label_set_text(status_, status.c_str());
     lv_label_set_text(detail_, detail.c_str());
     if (face == Face::Permission) {
+        if (lv_obj_has_flag(buttons_, LV_OBJ_FLAG_HIDDEN)) buttons_shown_at_ = lv_tick_get();
         lv_obj_remove_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void BuddyScreen::SetCorner(const std::string& text) {
+    if (root_ == nullptr) return;
+    DisplayLockGuard lock(display_);
+    lv_label_set_text(corner_, text.c_str());
 }
 
 void BuddyScreen::ShowHold(bool show, int hold_ms) {
