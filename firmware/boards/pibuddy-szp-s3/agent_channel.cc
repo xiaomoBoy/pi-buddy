@@ -31,6 +31,9 @@ constexpr int64_t kMemLogEveryUs = 60LL * 1000 * 1000;
 constexpr int64_t kArmDelayUs = 400LL * 1000;       // 请示刚出现的 0.4 秒内的语音不算
 constexpr int kWarnLeftS = 10;                      // 剩这么多秒时再提醒一次
 constexpr int kWarnMinTimeoutS = 20;                // 超时本来就很短的请示不提醒
+// “允许执行”的识别把握至少要这么高（实测正常说话 0.30～0.43，命令词表的门槛是 0.2）；
+// “拒绝”不设门槛，误触发也只是拦下命令
+constexpr float kVoiceAllowMinProb = 0.25f;
 
 constexpr uint32_t kMuted = 0xA9B0B5;
 constexpr uint32_t kTeal = 0x4F90AA;
@@ -41,7 +44,7 @@ constexpr uint32_t kCoral = 0xE5645A;
 // 设备内部的命令，和桥接程序发来的 JSON 一起排进收件箱
 constexpr const char* kCmdAllow = "\x01" "allow:";   // 后面跟 via
 constexpr const char* kCmdDeny = "\x01" "deny:";
-constexpr const char* kCmdVoiceAllow = "\x01" "voice-allow";
+constexpr const char* kCmdVoiceAllow = "\x01" "voice-allow:";   // 后面跟识别把握
 constexpr const char* kCmdVoiceDeny = "\x01" "voice-deny";
 constexpr const char* kCmdTouch = "\x01" "touch";
 constexpr const char* kCmdClosed = "\x01" "closed";
@@ -107,7 +110,7 @@ void AgentChannel::ReplyPermission(bool allow, Via via) {
 void AgentChannel::OnVoiceCommand(const char* action, float prob) {
     std::string name(action);
     ESP_LOGI(TAG, "voice command %s, prob %.3f", action, prob);
-    if (name == "pibuddy_allow") Post(kCmdVoiceAllow);
+    if (name == "pibuddy_allow") Post(std::string(kCmdVoiceAllow) + std::to_string(prob));
     else if (name == "pibuddy_deny") Post(kCmdVoiceDeny);
 }
 
@@ -355,7 +358,10 @@ void AgentChannel::HandleMessage(const std::string& text) {
     }
     if (text == kCmdHoldOn || text == kCmdHoldOff) {
         // 开始按 BOOT 就取消语音的放行，交给按键决定
-        if (text == kCmdHoldOn) voice_allow_at_us_ = 0;
+        if (text == kCmdHoldOn) {
+            voice_allow_at_us_ = 0;
+            voice_bar_shown_ = false;
+        }
         screen_.ShowHold(text == kCmdHoldOn && HasPendingPermission(), kHoldMs);
         return;
     }
@@ -364,20 +370,32 @@ void AgentChannel::HandleMessage(const std::string& text) {
         Decide(allow, text.c_str() + strlen(allow ? kCmdAllow : kCmdDeny));
         return;
     }
-    if (text == kCmdVoiceAllow || text == kCmdVoiceDeny) {
+    if (StartsWith(text, kCmdVoiceAllow) || text == kCmdVoiceDeny) {
+        bool allow = text != kCmdVoiceDeny;
         bool ready;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             ready = !perm_id_.empty() && Now() - perm_shown_us_ > kArmDelayUs;
         }
-        if (!ready) {
-            ESP_LOGI(TAG, "voice ignored, no permission on screen");
+        // 小智自己在说话或在听时不认：免得它的回答里正好有“允许执行”
+        auto device_state = Application::GetInstance().GetDeviceState();
+        const char* skip = !ready ? "no permission on screen"
+                         : device_state != kDeviceStateIdle ? "device busy"
+                         : holding_ ? "BOOT is held"
+                         : nullptr;
+        if (!skip && allow && strtof(text.c_str() + strlen(kCmdVoiceAllow), nullptr) < kVoiceAllowMinProb) {
+            skip = "allow prob too low";
+        }
+        if (skip) {
+            ESP_LOGI(TAG, "voice ignored, %s", skip);
             return;
         }
-        if (text == kCmdVoiceDeny) {
+        if (!allow) {
             Decide(false, "voice");
         } else if (voice_allow_at_us_ == 0) {
             voice_allow_at_us_ = Now() + kVoiceConfirmMs * 1000LL;
+            voice_bar_shown_ = true;
+            screen_.ShowHold(true, kVoiceConfirmMs, "听到允许执行，点屏幕取消");
             ESP_LOGI(TAG, "voice allow, waiting %d ms for a cancel", kVoiceConfirmMs);
         }
         return;
@@ -456,6 +474,7 @@ void AgentChannel::HandleMessage(const std::string& text) {
 
 void AgentChannel::Decide(bool allow, const char* via) {
     voice_allow_at_us_ = 0;
+    voice_bar_shown_ = false;
     last_reply_us_ = Now();
     screen_.ShowHold(false, kHoldMs);
     std::string id;
@@ -490,6 +509,11 @@ void AgentChannel::Refresh() {
         queue_len = queue_len_;
     }
     bool has_perm = authed_ && !perm_id.empty();
+    // 语音确认被别的原因打断（请示被撤、换了一条、断线），收起进度条
+    if (voice_bar_shown_ && voice_allow_at_us_ == 0) {
+        voice_bar_shown_ = false;
+        screen_.ShowHold(false, kHoldMs);
+    }
     if (!has_perm && state_ == "idle" && !sleeping_ && Now() - last_activity_us_ > kSleepAfterUs) {
         sleeping_ = true;
     }

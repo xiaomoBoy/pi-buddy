@@ -23,8 +23,9 @@ public:
     void OnTouch(std::function<void()> callback) { on_touch_ = std::move(callback); }
     // 请示时屏幕下方的“允许”“拒绝”两个触摸按钮
     void OnDecision(std::function<void(bool allow)> callback) { on_decision_ = std::move(callback); }
-    // 按住 BOOT 时的进度条：hold_ms 内填满，填满即拒绝；松开提前结束
-    void ShowHold(bool show, int hold_ms);
+    // 按钮位置上的进度条：按住 BOOT 时（填满即允许），或听到“允许执行”后的确认等待。
+    // label 为空时用按键的说明；进度条不接收触摸，点上去算点屏幕
+    void ShowHold(bool show, int hold_ms, const char* label = nullptr);
     // 左上角的小字（请示时显示项目名和剩余秒数），空字符串表示不显示
     void SetCorner(const std::string& text, uint32_t color);
 
@@ -45,6 +46,7 @@ private:
     uint32_t buttons_shown_at_ = 0;   // lv_tick；按钮刚出现的 0.4 秒内的点击不算
     lv_obj_t* hold_ = nullptr;
     lv_obj_t* hold_bar_ = nullptr;
+    lv_obj_t* hold_label_ = nullptr;
     bool visible_ = false;
     std::function<void()> on_touch_;
     std::function<void(bool)> on_decision_;

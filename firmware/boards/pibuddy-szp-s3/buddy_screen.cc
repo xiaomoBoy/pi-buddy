@@ -176,11 +176,12 @@ void BuddyScreen::Init(Display* display) {
     lv_obj_set_style_bg_color(hold_, lv_color_hex(kBg), 0);
     lv_obj_set_style_bg_opa(hold_, LV_OPA_COVER, 0);
     lv_obj_remove_flag(hold_, LV_OBJ_FLAG_SCROLLABLE);
-    auto hold_label = lv_label_create(hold_);
-    lv_label_set_text(hold_label, "按住到底 = 允许 · 松开 = 拒绝");
-    lv_obj_set_style_text_color(hold_label, lv_color_hex(kCream), 0);
-    lv_obj_set_pos(hold_label, 16, 0);
+    lv_obj_remove_flag(hold_, LV_OBJ_FLAG_CLICKABLE);
+    hold_label_ = lv_label_create(hold_);
+    lv_obj_set_style_text_color(hold_label_, lv_color_hex(kCream), 0);
+    lv_obj_set_pos(hold_label_, 16, 0);
     hold_bar_ = lv_bar_create(hold_);
+    lv_obj_remove_flag(hold_bar_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(hold_bar_, kWidth - 32, 10);
     lv_obj_set_pos(hold_bar_, 16, 26);
     lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kBar), LV_PART_MAIN);
@@ -318,7 +319,7 @@ void BuddyScreen::SetCorner(const std::string& text, uint32_t color) {
     lv_label_set_text(corner_, text.c_str());
 }
 
-void BuddyScreen::ShowHold(bool show, int hold_ms) {
+void BuddyScreen::ShowHold(bool show, int hold_ms, const char* label) {
     if (root_ == nullptr) return;
     DisplayLockGuard lock(display_);
     lv_anim_delete(hold_bar_, nullptr);
@@ -326,6 +327,7 @@ void BuddyScreen::ShowHold(bool show, int hold_ms) {
         lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    lv_label_set_text(hold_label_, label ? label : "按住到底 = 允许 · 松开 = 拒绝");
     lv_bar_set_value(hold_bar_, 0, LV_ANIM_OFF);
     lv_obj_remove_flag(hold_, LV_OBJ_FLAG_HIDDEN);
     lv_anim_t a;

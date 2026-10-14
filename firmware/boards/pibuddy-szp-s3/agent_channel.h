@@ -91,6 +91,7 @@ private:
     int perm_timeout_s_ = 0;
     bool perm_warned_ = false;         // 快超时的提醒已经响过
     int64_t voice_allow_at_us_ = 0;    // 听到“允许执行”后到这个时间点放行，0 表示没有
+    bool voice_bar_shown_ = false;     // 屏幕上正显示语音确认的进度条
     std::string flash_text_;           // 回复审批后短暂显示“已允许”“已拒绝”
     bool flash_allow_ = false;
     int64_t flash_until_us_ = 0;
