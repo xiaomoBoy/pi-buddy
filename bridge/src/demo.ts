@@ -50,6 +50,7 @@ const perm = await post('/v1/permission', {
   tool: 'bash',
   summary: 'rm -rf dist',
   timeout_s: 120,
+  project: 'pi-buddy',
 });
 if (!perm.ok) {
   process.stderr.write(`permission 失败：HTTP ${perm.status} ${await perm.text()}\n`);

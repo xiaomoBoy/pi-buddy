@@ -1,7 +1,40 @@
 #!/usr/bin/env node
+import { fileURLToPath } from 'node:url';
 import { loadOrCreateConfig } from './config.js';
 import { DEFAULT_PORT } from './protocol.js';
 import { startBridge } from './server.js';
+import { SERVICE_HELP, installLaunchAgent, statusLaunchAgent, uninstallLaunchAgent } from './service.js';
+
+const USAGE = '用法: pi-buddy-bridge [token | pair <code> | service <install|uninstall|status>]\n';
+
+function serviceCommand(argv: string[]): never {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(SERVICE_HELP);
+    process.exit(0);
+  }
+  if (process.platform !== 'darwin') {
+    process.stderr.write('只支持 macOS\n');
+    process.exit(1);
+  }
+  const uid = process.getuid?.();
+  if (uid === undefined) {
+    process.stderr.write('只支持 macOS\n');
+    process.exit(1);
+  }
+  const cliPath = fileURLToPath(import.meta.url);
+  const sub = argv[0];
+  if (sub === 'install') {
+    process.exit(installLaunchAgent({ uid, nodePath: process.execPath, cliPath }));
+  }
+  if (sub === 'uninstall') {
+    process.exit(uninstallLaunchAgent({ uid }));
+  }
+  if (sub === 'status') {
+    process.exit(statusLaunchAgent({ uid }));
+  }
+  process.stderr.write(SERVICE_HELP);
+  process.exit(1);
+}
 
 function readPort(): number {
   const port = process.env.PI_BUDDY_PORT ? Number(process.env.PI_BUDDY_PORT) : DEFAULT_PORT;
@@ -14,10 +47,19 @@ function readPort(): number {
 
 const arg = process.argv[2];
 
+if (arg === '--help' || arg === '-h') {
+  process.stdout.write(USAGE);
+  process.exit(0);
+}
+
 if (arg === 'token') {
   const config = loadOrCreateConfig();
   process.stdout.write(`${config.token}\n`);
   process.exit(0);
+}
+
+if (arg === 'service') {
+  serviceCommand(process.argv.slice(3));
 }
 
 if (arg === 'pair') {
@@ -50,7 +92,7 @@ if (arg === 'pair') {
 }
 
 if (arg) {
-  process.stderr.write('用法: pi-buddy-bridge [token | pair <code>]\n');
+  process.stderr.write(USAGE);
   process.exit(1);
 }
 

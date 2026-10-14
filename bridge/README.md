@@ -27,6 +27,14 @@ npx pi-buddy-bridge token
 
 换端口可以设置 `PI_BUDDY_PORT`。换配置目录可以设置 `PI_BUDDY_HOME`。
 
+想开机自启就运行 `service install`（只支持 macOS）。没有全局安装时，在 `bridge/` 目录执行：
+
+```bash
+npx pi-buddy-bridge service install
+```
+
+`package.json` 的 `bin.pi-buddy-bridge` 指向 `./dist/cli.js`，所以上面的 `npx` 和 `node dist/cli.js service install` 是一回事。它会写入 `~/Library/LaunchAgents/dev.pibuddy.bridge.plist`（Label `dev.pibuddy.bridge`），登录时启动，进程退出后拉起，标准输出和标准错误写到 `~/.pi-buddy/bridge.log`。卸载：`npx pi-buddy-bridge service uninstall`。查看是否已加载、pid 和日志路径：`npx pi-buddy-bridge service status`。
+
 ## 配对
 
 设备第一次连接、还没有 token 时，会在屏幕上显示 6 位配对码。桥接程序已经在运行时，在 Mac 上执行：
@@ -51,7 +59,7 @@ npx pi-buddy-bridge pair 123456
 npm run demo
 ```
 
-它会按顺序发送：待机 → 思考 → 干活 → 一次审批 → 完成 → 出错 → 待机。审批会停在模拟器上，点「允许（短按 BOOT）」或「拒绝（长按 BOOT）」后继续。没有模拟器连着的时候，这次审批会立刻返回 `no_device`。
+它会按顺序发送：待机 → 思考 → 干活 → 一次审批 → 完成 → 出错 → 待机。审批会停在模拟器上，点「允许（按住 BOOT）」或「拒绝（短按 BOOT）」后继续。没有模拟器连着的时候，这次审批会立刻返回 `no_device`。
 
 ## 测试
 

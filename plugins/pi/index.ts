@@ -24,11 +24,13 @@ import {
   modelName,
   needsApproval,
   permissionSummary,
+  projectName,
   turnDetail,
   workingDetail,
 } from './src/rules.ts';
 
 const DENIED_ON_DEVICE = '用户在 P 仔上拒绝了这条命令，命令没有执行';
+const DENIED_ON_DEVICE_VOICE = '用户在 P 仔上用语音拒绝了这条命令，命令没有执行';
 const DENIED_ON_TERMINAL = '在终端被拒绝';
 const TIMED_OUT = '用户没有在 P 仔上确认（等待超时），命令没有执行';
 const BLOCKED_NO_UI = '危险命令已拦截（没有界面可确认）';
@@ -39,6 +41,7 @@ const ERROR_DETAIL = '出错';
 
 type SessionState = 'idle' | 'thinking' | 'working' | 'done' | 'error';
 type DeviceDecision = 'allow' | 'deny' | 'timeout' | 'fallback';
+type ReplyVia = 'touch' | 'button' | 'voice';
 
 interface UiResult {
   kind: 'ui';
@@ -46,9 +49,19 @@ interface UiResult {
   dismissed: boolean;
 }
 
+interface DeviceAnswer {
+  decision: DeviceDecision;
+  via?: ReplyVia;
+}
+
 interface HttpResult {
   kind: 'http';
-  decision: DeviceDecision;
+  answer: DeviceAnswer;
+}
+
+function replyVia(value: unknown): ReplyVia | undefined {
+  if (value === 'touch' || value === 'button' || value === 'voice') return value;
+  return undefined;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -228,28 +241,43 @@ export default function (pi: ExtensionAPI) {
     return typeof command === 'string' ? command : undefined;
   };
 
-  const askDevice = async (tool: string, summary: string, session: string, signal: AbortSignal): Promise<DeviceDecision> => {
+  const askDevice = async (
+    tool: string,
+    summary: string,
+    session: string,
+    project: string | undefined,
+    signal: AbortSignal,
+  ): Promise<DeviceAnswer> => {
+    const payload: {
+      source: string;
+      session: string;
+      tool: string;
+      summary: string;
+      timeout_s: number;
+      project?: string;
+    } = {
+      source: SOURCE,
+      session,
+      tool,
+      summary,
+      timeout_s: PERMISSION_TIMEOUT_S,
+    };
+    if (project) payload.project = project;
     try {
       const response = await fetch(`${bridgeBase()}/v1/permission`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          source: SOURCE,
-          session,
-          tool,
-          summary,
-          timeout_s: PERMISSION_TIMEOUT_S,
-        }),
+        body: JSON.stringify(payload),
         signal,
       });
-      if (!response.ok) return 'fallback';
-      const body = (await response.json()) as { decision?: unknown };
+      if (!response.ok) return { decision: 'fallback' };
+      const body = (await response.json()) as { decision?: unknown; via?: unknown };
       if (body.decision === 'allow' || body.decision === 'deny' || body.decision === 'timeout') {
-        return body.decision;
+        return { decision: body.decision, via: replyVia(body.via) };
       }
-      return 'fallback';
+      return { decision: 'fallback' };
     } catch {
-      return 'fallback';
+      return { decision: 'fallback' };
     }
   };
 
@@ -263,10 +291,15 @@ export default function (pi: ExtensionAPI) {
       );
   };
 
-  const fromDevice = (decision: DeviceDecision): ToolCallEventResult | undefined => {
-    if (decision === 'allow') return undefined;
-    if (decision === 'deny') return { block: true, reason: DENIED_ON_DEVICE };
-    if (decision === 'timeout') return { block: true, reason: TIMED_OUT };
+  const fromDevice = (answer: DeviceAnswer): ToolCallEventResult | undefined => {
+    if (answer.decision === 'allow') return undefined;
+    if (answer.decision === 'deny') {
+      return {
+        block: true,
+        reason: answer.via === 'voice' ? DENIED_ON_DEVICE_VOICE : DENIED_ON_DEVICE,
+      };
+    }
+    if (answer.decision === 'timeout') return { block: true, reason: TIMED_OUT };
     return { block: true, reason: BLOCKED_NO_UI };
   };
 
@@ -279,14 +312,20 @@ export default function (pi: ExtensionAPI) {
   const gate = async (ctx: ExtensionContext, command: string): Promise<ToolCallEventResult | undefined> => {
     const httpAbort = new AbortController();
     const uiAbort = new AbortController();
-    const httpPromise = askDevice('bash', permissionSummary(command, { cwd: ctx.cwd }), sessionOf(ctx), httpAbort.signal);
+    const httpPromise = askDevice(
+      'bash',
+      permissionSummary(command, { cwd: ctx.cwd }),
+      sessionOf(ctx),
+      projectName(ctx.cwd),
+      httpAbort.signal,
+    );
     const uiPromise = ctx.hasUI ? askTerminal(ctx, command, uiAbort.signal) : undefined;
 
     if (!uiPromise) {
       return fromDevice(await httpPromise);
     }
 
-    const httpTagged: Promise<HttpResult> = httpPromise.then((decision) => ({ kind: 'http', decision }));
+    const httpTagged: Promise<HttpResult> = httpPromise.then((answer) => ({ kind: 'http', answer }));
     const first = await Promise.race([httpTagged, uiPromise]);
 
     if (first.kind === 'ui') {
@@ -294,9 +333,13 @@ export default function (pi: ExtensionAPI) {
       return fromTerminal(first);
     }
 
-    if (first.decision === 'allow' || first.decision === 'deny' || first.decision === 'timeout') {
+    if (
+      first.answer.decision === 'allow' ||
+      first.answer.decision === 'deny' ||
+      first.answer.decision === 'timeout'
+    ) {
       uiAbort.abort();
-      return fromDevice(first.decision);
+      return fromDevice(first.answer);
     }
 
     return fromTerminal(await uiPromise);

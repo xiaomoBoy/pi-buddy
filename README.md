@@ -21,6 +21,38 @@ The firmware is based on [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)
 - `assets/`：形象与音效 / art and sounds
 - `docs/`：文档 / docs
 
+## 快速上手
+
+1. 启动桥接程序：
+
+   ```bash
+   cd bridge && npm install && npm start
+   ```
+
+   想开机自启就运行 `service install`（只支持 macOS）。没有全局安装时，在 `bridge/` 目录执行 `npx pi-buddy-bridge service install`，或 `node dist/cli.js service install`。`bridge/package.json` 的 `bin.pi-buddy-bridge` 指向 `./dist/cli.js`，`scripts.start` 是 `node dist/cli.js`。
+
+2. 设备开机后，屏幕显示 6 位配对码。桥接程序已经在跑的时候，在 Mac 上配对：
+
+   ```bash
+   cd bridge && npx pi-buddy-bridge pair <配对码>
+   ```
+
+   等价写法是同一目录下的 `node dist/cli.js pair <配对码>`。
+
+3. 加载 pi 插件（在仓库根目录）：
+
+   ```bash
+   pi -e ./plugins/pi
+   ```
+
+4. 刷固件只刷应用、不清 NVS。步骤见 [firmware/README.md](firmware/README.md)。
+
+## 现在能做什么
+
+- **状态同步**：P 仔跟随 pi 的思考、执行、完成和出错。
+- **危险命令在 P 仔上审批**：屏幕上点「允许」「拒绝」；也可以按住 BOOT 1 秒允许、短按拒绝（按到一半松手算拒绝，请示出现前就按下的不算）。
+- **语音派活**：在设备上说一句话，派回给正在开着的 pi。这一项还没真机验证。
+
 ## License
 
 MIT

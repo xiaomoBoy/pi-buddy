@@ -18,6 +18,18 @@ export const SCREEN_W = 320;
 export const TEXT_MAX_WIDTH = SCREEN_W - TEXT_X;
 export const PERMISSION_HINT = 'BOOT：按住允许，短按拒绝';
 
+/** Top-left permission label: 「项目名 · 剩余秒数」. Without a name, only the seconds. */
+export function permissionCornerLabel(project, secondsLeft) {
+  const seconds = Number.isFinite(secondsLeft) ? Math.max(0, Math.ceil(secondsLeft)) : 0;
+  if (typeof project === 'string' && project.length > 0) return `${project} · ${seconds}`;
+  return String(seconds);
+}
+
+/** Simulator allow/deny buttons. Touch is the on-screen buttons, not BOOT or voice. */
+export function simulatorPermissionReply(id, decision) {
+  return { type: 'permission_reply', id, decision, via: 'touch' };
+}
+
 const P_ROWS = [
   '#########...',
   '###########.',
@@ -202,7 +214,7 @@ export function permissionSummaryLine(tool, summary) {
 /**
  * @param {{ fillStyle: string, font: string, textBaseline: string, fillRect: (x: number, y: number, w: number, h: number) => void, fillText: (text: string, x: number, y: number) => void, measureText?: (text: string) => { width: number } }} ctx
  * @param {string} state
- * @param {{ status?: string, detail?: string, accent?: string, drawText?: boolean, tool?: string, summary?: string }} [options]
+ * @param {{ status?: string, detail?: string, accent?: string, drawText?: boolean, tool?: string, summary?: string, corner?: string }} [options]
  */
 export function drawScreen(ctx, state, options = {}) {
   const accent = options.accent ?? ACCENT[state] ?? MUTED;
@@ -289,4 +301,14 @@ export function drawScreen(ctx, state, options = {}) {
     ctx.fillText(fitted(ctx, detail), TEXT_X, 220);
   }
   ctx.fillText('P. pi', 262, 6);
+  if (options.corner) {
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = CREAM;
+    const cornerMax = 262 - 8 - 12;
+    const cornerText =
+      typeof ctx.measureText === 'function'
+        ? fitText(options.corner, cornerMax, (value) => ctx.measureText(value).width)
+        : options.corner;
+    ctx.fillText(cornerText, 8, 6);
+  }
 }

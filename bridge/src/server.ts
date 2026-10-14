@@ -17,12 +17,15 @@ import {
   PAIR_TIMEOUT_MS,
   TASK_POLL_MS,
   isPairCode,
+  normalizeProject,
+  normalizeReplyVia,
   aggregateSessions,
   isJsonContentType,
   isLocalHttpHost,
   isLocalPageOrigin,
   isLoopback,
   isSessionState,
+  type ReplyVia,
   type SessionSnapshot,
 } from './protocol.js';
 
@@ -62,8 +65,11 @@ interface PendingPermission {
   tool: string;
   summary: string;
   timeout_s: number;
+  project?: string;
+  via?: ReplyVia;
   settled: boolean;
   timer?: NodeJS.Timeout;
+  deadline?: number;
   resolve: (decision: Decision) => void;
 }
 
@@ -189,15 +195,37 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     broadcast({ type: 'state', state: agg.state, detail: agg.detail, sessions: agg.sessions });
   };
 
-  const permissionMessage = (item: PendingPermission) => ({
-    type: 'permission',
-    id: item.id,
-    source: item.source,
-    tool: item.tool,
-    summary: item.summary,
-    timeout_s: item.timeout_s,
-    queue_len: queue.length,
-  });
+  // 计时超过 1 秒后再发（例如设备重连后补发），只给剩下的秒数，设备倒计时和桥接程序对得上；
+  // 刚显示的头 1 秒内（比如紧接着更新 queue_len）仍发原来的数字
+  const remainingTimeout = (item: PendingPermission): number => {
+    if (item.deadline === undefined) return item.timeout_s;
+    const leftMs = item.deadline - Date.now();
+    if (item.timeout_s * 1000 - leftMs < 1000) return item.timeout_s;
+    return Math.max(1, Math.ceil(leftMs / 1000));
+  };
+
+  const permissionMessage = (item: PendingPermission) => {
+    const message: {
+      type: 'permission';
+      id: string;
+      source: string;
+      tool: string;
+      summary: string;
+      timeout_s: number;
+      queue_len: number;
+      project?: string;
+    } = {
+      type: 'permission',
+      id: item.id,
+      source: item.source,
+      tool: item.tool,
+      summary: item.summary,
+      timeout_s: remainingTimeout(item),
+      queue_len: queue.length,
+    };
+    if (item.project !== undefined) message.project = item.project;
+    return message;
+  };
 
   const showActive = () => {
     if (!active) return;
@@ -231,7 +259,9 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     promote();
   };
 
+  // `timeout_s` is seconds. The pi plugin default is 120, so this fires at 120_000 ms.
   const arm = (item: PendingPermission) => {
+    item.deadline = Date.now() + item.timeout_s * 1000;
     item.timer = setTimeout(() => onTimeout(item), item.timeout_s * 1000);
   };
 
@@ -265,6 +295,7 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     tool: string;
     summary: string;
     timeout_s: number;
+    project?: string;
   }): { item: PendingPermission; done: Promise<Decision> } => {
     let resolveDecision: (decision: Decision) => void = () => {};
     const done = new Promise<Decision>((resolve) => {
@@ -498,7 +529,15 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
       return;
     }
 
-    const { item, done } = startPermission({ source, session, tool, summary, timeout_s });
+    const project = normalizeProject(body.project);
+    const { item, done } = startPermission({
+      source,
+      session,
+      tool,
+      summary,
+      timeout_s,
+      ...(project !== undefined ? { project } : {}),
+    });
     let finished = false;
     res.on('close', () => {
       if (!finished) cancelPermission(item.id);
@@ -506,7 +545,8 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     const decision = await done;
     finished = true;
     if (decision === 'cancelled' || res.destroyed || res.writableEnded) return;
-    sendJson(res, 200, { decision });
+    if (item.via) sendJson(res, 200, { decision, via: item.via });
+    else sendJson(res, 200, { decision });
   };
 
   const server = createServer((req, res) => {
@@ -630,7 +670,10 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
         const id = message.id;
         const decision = message.decision;
         if (typeof id !== 'string' || (decision !== 'allow' && decision !== 'deny')) return;
-        if (!active || active.id !== id) return;
+        if (!active || active.id !== id || active.settled) return;
+        const via = normalizeReplyVia(message.via);
+        if (via) active.via = via;
+        log(`permission reply ${decision} via=${via ?? 'unknown'}`);
         if (!settle(active, decision)) return;
         active = null;
         promote();
