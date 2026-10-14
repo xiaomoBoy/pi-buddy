@@ -39,6 +39,8 @@ constexpr const char* kCmdAllow = "\x01" "allow";
 constexpr const char* kCmdDeny = "\x01" "deny";
 constexpr const char* kCmdTouch = "\x01" "touch";
 constexpr const char* kCmdClosed = "\x01" "closed";
+constexpr const char* kCmdHoldOn = "\x01" "hold-on";
+constexpr const char* kCmdHoldOff = "\x01" "hold-off";
 
 int64_t Now() { return esp_timer_get_time(); }
 
@@ -59,6 +61,7 @@ void AgentChannel::Start(Display* display) {
     }
     screen_.Init(display);
     screen_.OnTouch([this]() { Post(kCmdTouch); });
+    screen_.OnDecision([this](bool allow) { ReplyPermission(allow); });
     // 栈放 PSRAM，不占紧张的内部内存；NVS 写入要关 cache，所以统一交给主任务做
     xTaskCreatePinnedToCoreWithCaps(TaskEntry, "pibuddy", kTaskStack, this, 3, &task_, tskNO_AFFINITY,
                                     MALLOC_CAP_SPIRAM);
@@ -83,6 +86,23 @@ bool AgentChannel::HasPendingPermission() {
 
 void AgentChannel::ReplyPermission(bool allow) {
     Post(allow ? kCmdAllow : kCmdDeny);
+}
+
+void AgentChannel::OnBootDown() {
+    armed_ = HasPendingPermission();
+    if (!armed_) return;
+    holding_ = true;
+    Post(kCmdHoldOn);
+}
+
+bool AgentChannel::OnBootUp() {
+    if (!holding_.exchange(false)) return false;
+    Post(kCmdHoldOff);
+    return true;
+}
+
+bool AgentChannel::SwallowClick() {
+    return Now() - last_reply_us_ < 1500LL * 1000;
 }
 
 bool AgentChannel::SendTask(const std::string& text, std::string& error) {
@@ -147,7 +167,12 @@ void AgentChannel::LogMemory(const char* when) {
 
 void AgentChannel::PlaySoundWhenIdle(const char* which) {
     auto& app = Application::GetInstance();
-    if (app.GetDeviceState() != kDeviceStateIdle) return;
+    auto state = app.GetDeviceState();
+    if (state != kDeviceStateIdle) {
+        ESP_LOGI(TAG, "sound %s skipped, device state %d", which, (int)state);
+        return;
+    }
+    ESP_LOGI(TAG, "sound %s", which);
     std::string name(which);
     app.Schedule([name]() {
         auto& app = Application::GetInstance();
@@ -296,7 +321,13 @@ void AgentChannel::HandleMessage(const std::string& text) {
         }
         return;
     }
+    if (text == kCmdHoldOn || text == kCmdHoldOff) {
+        screen_.ShowHold(text == kCmdHoldOn && HasPendingPermission(), kHoldMs);
+        return;
+    }
     if (text == kCmdAllow || text == kCmdDeny) {
+        last_reply_us_ = Now();
+        screen_.ShowHold(false, kHoldMs);
         std::string id;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -333,9 +364,11 @@ void AgentChannel::HandleMessage(const std::string& text) {
         SendHello();
     } else if (type == "state") {
         std::string state = JsonString(root, "state");
-        if (state != state_) {
+        // permission 是桥接程序汇总出来的，不算会话状态；审批结束回到原状态时不再响一次
+        if (state != "permission" && state != sound_state_) {
             if (state == "done") PlaySoundWhenIdle("success");
             if (state == "error") PlaySoundWhenIdle("error");
+            sound_state_ = state;
         }
         state_ = state;
         detail_ = JsonString(root, "detail");
@@ -394,7 +427,7 @@ void AgentChannel::Refresh() {
     } else if (has_perm) {
         face = Face::Permission;
         status = tool + " · " + summary;
-        detail = "短按允许 · 按住拒绝";
+        detail = "也可以短按 BOOT 允许 · 按住拒绝";
         if (queue_len > 0) detail += " · 还有 " + std::to_string(queue_len) + " 条";
         accent = kAmber;
     } else if (sleeping_) {

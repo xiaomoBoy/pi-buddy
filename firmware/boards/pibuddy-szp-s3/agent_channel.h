@@ -6,6 +6,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -31,6 +32,15 @@ public:
     bool HasPendingPermission();
     void ReplyPermission(bool allow);
     bool SendTask(const std::string& text, std::string& error);
+    // BOOT 键按下、松开（请示时显示按住进度条）；松开时如果正在按住计时，返回 true
+    void OnBootDown();
+    bool OnBootUp();
+    // 刚回复完审批的 1.5 秒内，多出来的按键不交给小智，免得误开语音对话
+    bool SwallowClick();
+    // 这次按键是不是在请示出现之后才按下的；只有这样的按键才算审批（提前按住的不算）
+    bool ConsumeArmed() { return armed_.exchange(false); }
+
+    static constexpr int kHoldMs = 1500;   // 按住多久算“拒绝”，与板型里的 long_press_time 一致
 
 private:
     AgentChannel() = default;
@@ -71,6 +81,10 @@ private:
     int64_t last_activity_us_ = 0;
     int64_t last_pong_us_ = 0;
     bool sleeping_ = false;
+    std::atomic<bool> holding_{false};
+    std::atomic<bool> armed_{false};
+    std::string sound_state_ = "idle";   // 上一次响提示音时的会话状态，审批结束回到原状态时不重复响
+    std::atomic<int64_t> last_reply_us_{0};
     std::string rendered_;             // 上一次画上去的内容，没变化就不重画
 };
 

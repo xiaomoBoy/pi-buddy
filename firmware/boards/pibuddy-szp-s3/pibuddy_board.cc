@@ -108,7 +108,13 @@ private:
             // P 仔在请示时，短按 BOOT 是“允许”
             auto& agent = AgentChannel::GetInstance();
             if (agent.HasPendingPermission()) {
-                agent.ReplyPermission(true);
+                // 请示出现前就按下的那一下不算，免得误“允许”
+                if (agent.ConsumeArmed()) {
+                    agent.ReplyPermission(true);
+                }
+                return;
+            }
+            if (agent.SwallowClick()) {
                 return;
             }
             auto& app = Application::GetInstance();
@@ -123,20 +129,28 @@ private:
             }
         });
 
-        // P 仔在请示时，按住 BOOT（0.6 秒）是“拒绝”
+        // P 仔在请示时，按住 BOOT（1.5 秒，屏幕上有进度条）是“拒绝”
         boot_button_.OnLongPress([this]() {
             auto& agent = AgentChannel::GetInstance();
-            if (agent.HasPendingPermission()) {
+            if (agent.HasPendingPermission() && agent.ConsumeArmed()) {
                 agent.ReplyPermission(false);
             }
         });
 
         boot_button_.OnPressDown([this]() {
+            auto& agent = AgentChannel::GetInstance();
+            if (agent.HasPendingPermission()) {
+                agent.OnBootDown();
+                return;
+            }
             if (press_to_talk_tool_ && press_to_talk_tool_->IsPressToTalkEnabled()) {
                 Application::GetInstance().StartListening();
             }
         });
         boot_button_.OnPressUp([this]() {
+            if (AgentChannel::GetInstance().OnBootUp()) {
+                return;
+            }
             if (press_to_talk_tool_ && press_to_talk_tool_->IsPressToTalkEnabled()) {
                 Application::GetInstance().StopListening();
             }
@@ -144,6 +158,9 @@ private:
 
 #if CONFIG_USE_DEVICE_AEC
         boot_button_.OnDoubleClick([this]() {
+            if (AgentChannel::GetInstance().SwallowClick()) {
+                return;
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateIdle) {
                 app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
@@ -312,7 +329,7 @@ private:
     }
 
 public:
-    PiBuddyBoard() : boot_button_(BOOT_BUTTON_GPIO, false, 600) {
+    PiBuddyBoard() : boot_button_(BOOT_BUTTON_GPIO, false, AgentChannel::kHoldMs) {
         InitializeI2c();
         InitializeSpi();
         InitializeSt7789Display();

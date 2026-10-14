@@ -128,6 +128,55 @@ void BuddyScreen::Init(Display* display) {
     lv_label_set_text(mark, "P. pi");
     lv_obj_set_pos(mark, 262, 6);
 
+    // 请示时的两个触摸按钮，放在 P 的脚下面（P 的最下一行到 y=156）
+    buttons_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(buttons_);
+    lv_obj_set_size(buttons_, kWidth, 34);
+    lv_obj_set_pos(buttons_, 0, 159);
+    lv_obj_remove_flag(buttons_, LV_OBJ_FLAG_SCROLLABLE);
+    auto make_button = [this](int x, uint32_t color, const char* text, bool allow) {
+        auto btn = lv_button_create(buttons_);
+        lv_obj_set_size(btn, 136, 34);
+        lv_obj_set_pos(btn, x, 0);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        auto label = lv_label_create(btn);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_color(label, lv_color_hex(kCream), 0);
+        lv_obj_center(label);
+        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+            auto self = static_cast<BuddyScreen*>(lv_event_get_user_data(e));
+            bool allow = lv_obj_get_user_data(static_cast<lv_obj_t*>(lv_event_get_target(e))) != nullptr;
+            if (self->on_decision_) self->on_decision_(allow);
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_set_user_data(btn, allow ? (void*)1 : nullptr);
+    };
+    make_button(16, kDeep, "允许", true);
+    make_button(168, kCoral, "拒绝", false);
+    lv_obj_add_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
+
+    // 按住 BOOT 时盖在按钮上面的进度条
+    hold_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(hold_);
+    lv_obj_set_size(hold_, kWidth, 38);
+    lv_obj_set_pos(hold_, 0, 157);
+    lv_obj_set_style_bg_color(hold_, lv_color_hex(kBg), 0);
+    lv_obj_set_style_bg_opa(hold_, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(hold_, LV_OBJ_FLAG_SCROLLABLE);
+    auto hold_label = lv_label_create(hold_);
+    lv_label_set_text(hold_label, "松开 = 允许 · 按到底 = 拒绝");
+    lv_obj_set_style_text_color(hold_label, lv_color_hex(kCream), 0);
+    lv_obj_set_pos(hold_label, 16, 0);
+    hold_bar_ = lv_bar_create(hold_);
+    lv_obj_set_size(hold_bar_, kWidth - 32, 10);
+    lv_obj_set_pos(hold_bar_, 16, 26);
+    lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kBar), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kCoral), LV_PART_INDICATOR);
+    lv_bar_set_range(hold_bar_, 0, 1000);
+    lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -233,12 +282,41 @@ void BuddyScreen::Render(Face face, const std::string& status, const std::string
         if (lv_obj_get_style_text_font(status_, LV_PART_MAIN) != font) {
             lv_obj_set_style_text_font(status_, font, 0);
             lv_obj_set_style_text_font(detail_, font, 0);
+            lv_obj_set_style_text_font(buttons_, font, 0);
+            lv_obj_set_style_text_font(hold_, font, 0);
         }
     }
     lv_obj_set_style_bg_color(accent_, lv_color_hex(accent), 0);
     lv_obj_set_style_text_color(status_, lv_color_hex(accent), 0);
     lv_label_set_text(status_, status.c_str());
     lv_label_set_text(detail_, detail.c_str());
+    if (face == Face::Permission) {
+        lv_obj_remove_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void BuddyScreen::ShowHold(bool show, int hold_ms) {
+    if (root_ == nullptr) return;
+    DisplayLockGuard lock(display_);
+    lv_anim_delete(hold_bar_, nullptr);
+    if (!show) {
+        lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_bar_set_value(hold_bar_, 0, LV_ANIM_OFF);
+    lv_obj_remove_flag(hold_, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, hold_bar_);
+    lv_anim_set_values(&a, 0, 1000);
+    lv_anim_set_duration(&a, hold_ms);
+    lv_anim_set_exec_cb(&a, [](void* bar, int32_t v) {
+        lv_bar_set_value(static_cast<lv_obj_t*>(bar), v, LV_ANIM_OFF);
+    });
+    lv_anim_start(&a);
 }
 
 void BuddyScreen::SetVisible(bool visible) {

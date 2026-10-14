@@ -21,6 +21,10 @@ public:
     void SetVisible(bool visible);
     bool visible() const { return visible_; }
     void OnTouch(std::function<void()> callback) { on_touch_ = std::move(callback); }
+    // 请示时屏幕下方的“允许”“拒绝”两个触摸按钮
+    void OnDecision(std::function<void(bool allow)> callback) { on_decision_ = std::move(callback); }
+    // 按住 BOOT 时的进度条：hold_ms 内填满，填满即拒绝；松开提前结束
+    void ShowHold(bool show, int hold_ms);
 
 private:
     void DrawMascot(Face face);
@@ -34,8 +38,12 @@ private:
     lv_obj_t* status_ = nullptr;
     lv_obj_t* detail_ = nullptr;
     uint16_t* pixels_ = nullptr;
+    lv_obj_t* buttons_ = nullptr;
+    lv_obj_t* hold_ = nullptr;
+    lv_obj_t* hold_bar_ = nullptr;
     bool visible_ = false;
     std::function<void()> on_touch_;
+    std::function<void(bool)> on_decision_;
 };
 
 #endif

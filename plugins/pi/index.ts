@@ -28,9 +28,9 @@ import {
   workingDetail,
 } from './src/rules.ts';
 
-const DENIED_ON_DEVICE = '在 P 仔上被拒绝';
+const DENIED_ON_DEVICE = '用户在 P 仔上拒绝了这条命令，命令没有执行';
 const DENIED_ON_TERMINAL = '在终端被拒绝';
-const TIMED_OUT = '在 P 仔上等待超时';
+const TIMED_OUT = '用户没有在 P 仔上确认（等待超时），命令没有执行';
 const BLOCKED_NO_UI = '危险命令已拦截（没有界面可确认）';
 const BLOCKED_ERROR = '审批失败，已拦截';
 const TASK_NOTICE = '收到 P 仔派来的任务';

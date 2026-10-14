@@ -14,7 +14,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `pibuddy_board.cc` | 板型入口；短按 BOOT 允许、按住 0.6 秒拒绝；注册 MCP 工具 `self.pi.dispatch_task` |
+| `pibuddy_board.cc` | 板型入口；审批：屏幕上点「允许」「拒绝」，或短按 BOOT 允许、按住 1.5 秒拒绝（请示出现前就按下的不算）；注册 MCP 工具 `self.pi.dispatch_task` |
 | `agent_channel.*` | 连桥接程序（协议 v1.1）：mDNS 发现、配对、状态、审批、提示音、内存日志 |
 | `buddy_screen.*` | P 仔全屏界面，画在 LVGL 顶层，形象与 `assets/mascot/draw.py` 一致 |
 | `mdns_lookup.*` | 一次性的 mDNS 查询，不引入 mdns 组件 |
