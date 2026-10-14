@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    name: Build lichuang-dev
+    name: Build pibuddy-szp-s3
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:v6.1
@@ -33,23 +33,33 @@ jobs:
         shell: bash
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Build lichuang-dev
+      - name: Overlay pi-buddy board
+        run: python3 firmware/scripts/prepare.py
+
+      - name: Build pibuddy-szp-s3
         working-directory: firmware/xiaozhi
         shell: bash
         run: |
           source "$IDF_PATH/export.sh"
-          python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
+          python scripts/build.py pibuddy/szp-s3 --name pibuddy-szp-s3
 
-      - name: Upload merged-binary.bin
+      # merged-binary.bin 会覆盖整片 flash（含 NVS 里的 WiFi 和激活信息），
+      # 已经在用的板子只刷 xiaozhi.bin（0x20000），见 firmware/README.md
+      - name: Upload firmware
         uses: actions/upload-artifact@v7
         with:
-          name: lichuang-dev-${{ steps.sha.outputs.short }}
-          path: firmware/xiaozhi/build/merged-binary.bin
+          name: pibuddy-szp-s3-${{ steps.sha.outputs.short }}
+          path: |
+            firmware/xiaozhi/build/merged-binary.bin
+            firmware/xiaozhi/build/xiaozhi.bin
+            firmware/xiaozhi/build/flasher_args.json
           if-no-files-found: error
 
       - name: Create GitHub Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
-          files: firmware/xiaozhi/build/merged-binary.bin
+          files: |
+            firmware/xiaozhi/build/merged-binary.bin
+            firmware/xiaozhi/build/xiaozhi.bin
           fail_on_unmatched_files: true
