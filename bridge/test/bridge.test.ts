@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import os from 'node:os';
@@ -31,7 +31,13 @@ function lanAddress(): string | null {
 
 async function withBridge(
   fn: (bridge: RunningBridge) => Promise<void>,
-  options: { helloTimeoutMs?: number; taskPollMs?: number; token?: string } = {},
+  options: {
+    helloTimeoutMs?: number;
+    pairTimeoutMs?: number;
+    taskPollMs?: number;
+    token?: string;
+    onPairRequest?: (deviceId: string) => void;
+  } = {},
 ): Promise<void> {
   const bridge = await startBridge({
     host: '0.0.0.0',
@@ -40,7 +46,9 @@ async function withBridge(
     mdns: false,
     silent: true,
     helloTimeoutMs: options.helloTimeoutMs ?? 400,
+    pairTimeoutMs: options.pairTimeoutMs,
     taskPollMs: options.taskPollMs ?? 250,
+    onPairRequest: options.onPairRequest,
   });
   try {
     await fn(bridge);
@@ -140,6 +148,68 @@ async function postJson(port: number, pathname: string, body: unknown, host = '1
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+}
+
+function pairArrival(): {
+  onPairRequest: (deviceId: string) => void;
+  wait: (deviceId: string) => Promise<void>;
+} {
+  const arrived = new Set<string>();
+  const waiting = new Map<string, () => void>();
+  return {
+    onPairRequest: (deviceId) => {
+      arrived.add(deviceId);
+      const resolve = waiting.get(deviceId);
+      if (!resolve) return;
+      waiting.delete(deviceId);
+      resolve();
+    },
+    wait: (deviceId) => {
+      if (arrived.has(deviceId)) return Promise.resolve();
+      return new Promise((resolve) => waiting.set(deviceId, resolve));
+    },
+  };
+}
+
+function openPairingDevice(port: number, deviceId: string, code: string): Device & { opened: Promise<void> } {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/device`);
+  ws.on('error', () => {});
+  const tracked = track(ws);
+  const opened = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('pairing socket open timed out')), 2000);
+    ws.once('open', () => {
+      ws.send(JSON.stringify({ type: 'pair_request', v: 1, device_id: deviceId, code }), (error) => {
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  });
+  return { ws, messages: tracked.messages, waitFor: tracked, ready: Promise.resolve(), opened };
+}
+
+function runCli(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
+      cwd: BRIDGE_DIR,
+      env,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
   });
 }
 
@@ -515,5 +585,251 @@ describe('pi-buddy bridge', () => {
       assert.equal(ack?.v, 1);
       device.ws.close();
     });
+  });
+
+  it('lets a paired device hello and come online', async () => {
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const device = openPairingDevice(bridge.port, 'desk-1', '012345');
+      await device.opened;
+      await arrival.wait('desk-1');
+      const response = await postJson(bridge.port, '/v1/pair', { code: '012345' });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { device_id: 'desk-1' });
+      const paired = await device.waitFor((message) => message.type === 'pair_ok');
+      assert.equal(paired.token, bridge.token);
+      device.ws.send(
+        JSON.stringify({
+          type: 'hello',
+          v: 1,
+          token: paired.token,
+          device_id: 'desk-1',
+          fw: '1.0.0',
+          board: 'pibuddy-szp-s3',
+        }),
+      );
+      const ack = await device.waitFor((message) => message.type === 'hello_ack');
+      assert.equal(ack.v, 1);
+      const pending = postJson(bridge.port, '/v1/permission', permissionBody('after-pair', 3)).then((res) =>
+        res.json(),
+      );
+      const shown = await device.waitFor((message) => message.type === 'permission' && message.summary === 'after-pair');
+      device.ws.send(JSON.stringify({ type: 'permission_reply', id: shown.id, decision: 'allow' }));
+      assert.deepEqual(await pending, { decision: 'allow' });
+      device.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('returns 404 when the pairing code does not match', async () => {
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const device = openPairingDevice(bridge.port, 'desk-1', '123456');
+      await device.opened;
+      await arrival.wait('desk-1');
+      const wrong = await postJson(bridge.port, '/v1/pair', { code: '000000' });
+      assert.equal(wrong.status, 404);
+      assert.deepEqual(await wrong.json(), { error: 'not_found' });
+      assert.equal(
+        device.messages.some((message) => message.type === 'pair_ok'),
+        false,
+      );
+      const right = await postJson(bridge.port, '/v1/pair', { code: '123456' });
+      assert.equal(right.status, 200);
+      assert.deepEqual(await right.json(), { device_id: 'desk-1' });
+      device.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('clears pending pair requests after five consecutive mismatches', async () => {
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const first = openPairingDevice(bridge.port, 'dev-a', '111111');
+      const second = openPairingDevice(bridge.port, 'dev-b', '222222');
+      await first.opened;
+      await arrival.wait('dev-a');
+      await second.opened;
+      await arrival.wait('dev-b');
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const miss = await postJson(bridge.port, '/v1/pair', { code: '999999' });
+        assert.equal(miss.status, 404);
+      }
+      const stillThere = await postJson(bridge.port, '/v1/pair', { code: '111111' });
+      assert.equal(stillThere.status, 200);
+      assert.deepEqual(await stillThere.json(), { device_id: 'dev-a' });
+      await first.waitFor((message) => message.type === 'pair_ok');
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const miss = await postJson(bridge.port, '/v1/pair', { code: '999999' });
+        assert.equal(miss.status, 404);
+        assert.deepEqual(await miss.json(), { error: 'not_found' });
+      }
+      const cleared = await postJson(bridge.port, '/v1/pair', { code: '222222' });
+      assert.equal(cleared.status, 404);
+      assert.equal(
+        second.messages.some((message) => message.type === 'pair_ok'),
+        false,
+      );
+
+      const fresh = openPairingDevice(bridge.port, 'dev-c', '333333');
+      await fresh.opened;
+      await arrival.wait('dev-c');
+      const again = await postJson(bridge.port, '/v1/pair', { code: '333333' });
+      assert.equal(again.status, 200);
+      assert.deepEqual(await again.json(), { device_id: 'dev-c' });
+      first.ws.close();
+      second.ws.close();
+      fresh.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('drops a pair request when that device disconnects', async () => {
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const gone = openPairingDevice(bridge.port, 'gone', '123456');
+      const stay = openPairingDevice(bridge.port, 'stay', '654321');
+      await gone.opened;
+      await arrival.wait('gone');
+      await stay.opened;
+      await arrival.wait('stay');
+      const closed = new Promise<void>((resolve) => gone.ws.once('close', () => resolve()));
+      gone.ws.close();
+      await closed;
+      const missing = await postJson(bridge.port, '/v1/pair', { code: '123456' });
+      assert.equal(missing.status, 404);
+      assert.deepEqual(await missing.json(), { error: 'not_found' });
+      const kept = await postJson(bridge.port, '/v1/pair', { code: '654321' });
+      assert.equal(kept.status, 200);
+      assert.deepEqual(await kept.json(), { device_id: 'stay' });
+      stay.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('rejects /v1/pair that is not a local JSON call', async () => {
+    const lan = lanAddress();
+    assert.ok(lan, 'this test needs a non-loopback IPv4 address');
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const device = openPairingDevice(bridge.port, 'desk-1', '123456');
+      await device.opened;
+      await arrival.wait('desk-1');
+
+      const remote = await postJson(bridge.port, '/v1/pair', { code: '123456' }, lan);
+      assert.equal(remote.status, 403);
+      assert.deepEqual(await remote.json(), { error: 'forbidden' });
+
+      const rebind = await requestWithHost(
+        bridge.port,
+        '/v1/pair',
+        'evil.example',
+        'POST',
+        { 'content-type': 'application/json' },
+        JSON.stringify({ code: '123456' }),
+      );
+      assert.equal(rebind.status, 403);
+      assert.deepEqual(JSON.parse(rebind.body), { error: 'forbidden' });
+
+      const plain = await fetch(`http://127.0.0.1:${bridge.port}/v1/pair`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: JSON.stringify({ code: '123456' }),
+      });
+      assert.equal(plain.status, 415);
+      assert.deepEqual(await plain.json(), { error: 'unsupported_media_type' });
+      assert.equal(
+        device.messages.some((message) => message.type === 'pair_ok'),
+        false,
+      );
+
+      const local = await postJson(bridge.port, '/v1/pair', { code: '123456' });
+      assert.equal(local.status, 200);
+      assert.deepEqual(await local.json(), { device_id: 'desk-1' });
+      device.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('rejects the earliest pair request when a fourth one arrives', async () => {
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const codes = ['111111', '222222', '333333', '444444'];
+      const devices: Array<Device & { opened: Promise<void>; closeCode: Promise<number> }> = [];
+      for (let index = 0; index < codes.length; index += 1) {
+        const device = openPairingDevice(bridge.port, `d${index}`, codes[index]!);
+        const closeCode = new Promise<number>((resolve) => device.ws.once('close', (code) => resolve(code)));
+        await device.opened;
+        await arrival.wait(`d${index}`);
+        devices.push({ ...device, closeCode });
+      }
+      const earliest = devices[0]!;
+      assert.equal(await earliest.closeCode, 1008);
+      const evicted = await postJson(bridge.port, '/v1/pair', { code: '111111' });
+      assert.equal(evicted.status, 404);
+      const kept = await postJson(bridge.port, '/v1/pair', { code: '222222' });
+      assert.equal(kept.status, 200);
+      assert.deepEqual(await kept.json(), { device_id: 'd1' });
+      const newest = await postJson(bridge.port, '/v1/pair', { code: '444444' });
+      assert.equal(newest.status, 200);
+      assert.deepEqual(await newest.json(), { device_id: 'd3' });
+      for (const device of devices.slice(1)) device.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('waits five minutes worth of pair timeout instead of the hello timeout', async () => {
+    const arrival = pairArrival();
+    await withBridge(
+      async (bridge) => {
+        const device = openPairingDevice(bridge.port, 'slow', '123456');
+        await device.opened;
+        await arrival.wait('slow');
+        let closed = false;
+        device.ws.on('close', () => {
+          closed = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        assert.equal(closed, false);
+        assert.equal(device.ws.readyState, WebSocket.OPEN);
+        const code = await new Promise<number>((resolve) => device.ws.once('close', (closeCode) => resolve(closeCode)));
+        assert.equal(code, 4000);
+        const late = await postJson(bridge.port, '/v1/pair', { code: '123456' });
+        assert.equal(late.status, 404);
+      },
+      { helloTimeoutMs: 200, pairTimeoutMs: 1500, onPairRequest: arrival.onPairRequest },
+    );
+  });
+
+  it('rejects a pair_request whose code is not six digits', async () => {
+    await withBridge(async (bridge) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/v1/device`);
+      ws.on('error', () => {});
+      const closed = new Promise<number>((resolve) => ws.on('close', (code) => resolve(code)));
+      await new Promise<void>((resolve) => ws.once('open', () => resolve()));
+      ws.send(JSON.stringify({ type: 'pair_request', v: 1, device_id: 'bad', code: '12345' }));
+      assert.equal(await closed, 1008);
+      const response = await postJson(bridge.port, '/v1/pair', { code: '12345' });
+      assert.equal(response.status, 404);
+    });
+  });
+
+  it('prints the pair result from pi-buddy-bridge pair <code>', async () => {
+    const arrival = pairArrival();
+    await withBridge(async (bridge) => {
+      const device = openPairingDevice(bridge.port, 'cli-dev', '135790');
+      await device.opened;
+      await arrival.wait('cli-dev');
+      const env = { ...process.env, PI_BUDDY_PORT: String(bridge.port) };
+      const printed = await runCli(['pair', '135790'], env);
+      assert.equal(printed.status, 0, printed.stderr);
+      assert.deepEqual(JSON.parse(printed.stdout), { device_id: 'cli-dev' });
+      const paired = await device.waitFor((message) => message.type === 'pair_ok');
+      assert.equal(paired.token, bridge.token);
+
+      const missing = await runCli(['pair', '000000'], env);
+      assert.notEqual(missing.status, 0);
+      assert.match(missing.stderr, /not_found/);
+
+      const usage = await runCli(['pair'], env);
+      assert.notEqual(usage.status, 0);
+      assert.match(usage.stderr, /pi-buddy-bridge pair <code>/);
+      device.ws.close();
+    }, { onPairRequest: arrival.onPairRequest });
   });
 });

@@ -27,6 +27,16 @@ npx pi-buddy-bridge token
 
 换端口可以设置 `PI_BUDDY_PORT`。换配置目录可以设置 `PI_BUDDY_HOME`。
 
+## 配对
+
+设备第一次连接、还没有 token 时，会在屏幕上显示 6 位配对码。桥接程序已经在运行时，在 Mac 上执行：
+
+```bash
+npx pi-buddy-bridge pair 123456
+```
+
+码正确时，标准输出打印 `{"device_id":"..."}`，设备用下发的 token 在同一条连接上完成 hello。码不对时，错误打到标准错误，进程以非 0 退出。端口同样看 `PI_BUDDY_PORT`，默认 `4317`。已经有 token 的设备（包括网页模拟器）不需要这一步。
+
 ## 打开模拟器
 
 浏览器打开 [http://127.0.0.1:4317/sim](http://127.0.0.1:4317/sim)。
