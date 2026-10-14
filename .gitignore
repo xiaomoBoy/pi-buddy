@@ -20,3 +20,6 @@ venv/
 build/
 managed_components/
 sdkconfig.old
+
+# prepare.py 叠加进小智的板型（生成物）
+firmware/xiaozhi/main/boards/pibuddy/

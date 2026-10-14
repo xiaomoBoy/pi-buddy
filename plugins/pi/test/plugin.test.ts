@@ -456,7 +456,7 @@ describe('pi plugin', { concurrency: 1 }, () => {
       );
       const denied = await device.waitFor((message) => message.type === 'permission' && message.summary === 'rm -rf dist');
       device.ws.send(JSON.stringify({ type: 'permission_reply', id: denied.id, decision: 'deny' }));
-      assert.deepEqual(await denyPending, { block: true, reason: '在 P 仔上被拒绝' });
+      assert.deepEqual(await denyPending, { block: true, reason: '用户在 P 仔上拒绝了这条命令，命令没有执行' });
       assert.equal(denyAborted, true);
       device.ws.close();
     });
@@ -706,7 +706,7 @@ describe('pi plugin', { concurrency: 1 }, () => {
       );
       const shown = await device.waitFor((message) => message.type === 'permission' && message.summary === 'ls');
       device.ws.send(JSON.stringify({ type: 'permission_reply', id: shown.id, decision: 'deny' }));
-      assert.deepEqual(await pending, { block: true, reason: '在 P 仔上被拒绝' });
+      assert.deepEqual(await pending, { block: true, reason: '用户在 P 仔上拒绝了这条命令，命令没有执行' });
       device.ws.close();
     });
   });

@@ -255,4 +255,4 @@ v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然�
 
 画面是 320×240 的 canvas，CSS 显示为 640×480（2 倍），`image-rendering: pixelated`，像素不插值。形象与 `assets/mascot/draw.py` 一致：网格 `S=7`，原点 `(112, 44)`，七种状态为 `idle`、`thinking`、`working`、`permission`、`done`、`error`、`sleep`。状态栏在 `y=196`，左侧 4 像素为当前状态的强调色。中文使用系统无衬线字体。
 
-状态栏的 `detail` 使用桥接程序发来的 `detail`。`permission` 时改为显示 `tool`、`summary`，以及「短按允许 · 长按拒绝」。页面上的「允许（短按 BOOT）」和「拒绝（长按 BOOT）」发送 `permission_reply`。输入框发送 `task`。
+状态栏的 `detail` 使用桥接程序发来的 `detail`。`permission` 时改为显示 `tool`、`summary`，以及「BOOT：按住允许，短按拒绝」。页面上的「允许（按住 BOOT）」和「拒绝（短按 BOOT）」发送 `permission_reply`。输入框发送 `task`。
