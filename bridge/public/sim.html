@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P 仔 · pi-buddy</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f3f0e8;
+      --ink: #1c242b;
+      --muted: #5c676e;
+      --teal: #276d89;
+      --coral: #e5645a;
+      --cream: #f8f5ed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: sans-serif;
+    }
+    main {
+      width: min(720px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 48px;
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .sub {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    canvas.screen {
+      width: 640px;
+      height: 480px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #26313a;
+      cursor: pointer;
+      display: block;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    button, input {
+      font: inherit;
+      font-size: 15px;
+    }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 14px;
+      color: var(--cream);
+      background: var(--teal);
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.deny { background: var(--coral); }
+    button.ghost {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid #c8c2b6;
+    }
+    form.row { margin-top: 8px; }
+    input[type="text"] {
+      flex: 1 1 220px;
+      min-width: 0;
+      border: 1px solid #c8c2b6;
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: white;
+      color: var(--ink);
+    }
+    .meta {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>P 仔</h1>
+    <p class="sub">pi-buddy 网页模拟器 · 320×240，显示为 2 倍</p>
+    <canvas id="screen" class="screen" width="320" height="240"></canvas>
+    <div class="row">
+      <button id="allow" type="button" disabled>允许（短按 BOOT）</button>
+      <button id="deny" class="deny" type="button" disabled>拒绝（长按 BOOT）</button>
+    </div>
+    <form id="task-form" class="row">
+      <input id="task-text" type="text" maxlength="500" placeholder="输入要派给 pi 的任务" autocomplete="off" />
+      <button id="task-send" class="ghost" type="submit">派发任务</button>
+    </form>
+    <p id="queue" class="meta" hidden></p>
+    <p id="link" class="meta">未连接</p>
+  </main>
+  <script id="boot" type="application/json">__BOOT_JSON__</script>
+  <script type="module" src="/sim.js"></script>
+</body>
+</html>
