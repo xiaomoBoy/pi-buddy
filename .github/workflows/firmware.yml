@@ -10,6 +10,9 @@ on:
       - "firmware/**"
       - ".github/workflows/firmware.yml"
   pull_request:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
   workflow_dispatch:
 
 permissions:

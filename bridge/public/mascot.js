@@ -12,6 +12,11 @@ export const BAR = '#1C242B';
 export const S = 7;
 export const OX = 112;
 export const OY = 44;
+export const TEXT_X = 14;
+export const SCREEN_W = 320;
+/** Status-bar text may run from TEXT_X to the right edge of the 320px screen. */
+export const TEXT_MAX_WIDTH = SCREEN_W - TEXT_X;
+export const PERMISSION_HINT = '短按允许 · 长按拒绝';
 
 const P_ROWS = [
   '#########...',
@@ -157,9 +162,47 @@ const Z = [
 ];
 
 /**
- * @param {{ fillStyle: string, font: string, textBaseline: string, fillRect: (x: number, y: number, w: number, h: number) => void, fillText: (text: string, x: number, y: number) => void }} ctx
+ * Keep `text` within `maxWidth` pixels. Overflow ends with "…".
+ * @param {string} text
+ * @param {number} maxWidth
+ * @param {(value: string) => number} measure
+ */
+export function fitText(text, maxWidth, measure) {
+  if (!text) return '';
+  if (measure(text) <= maxWidth) return text;
+  const ellipsis = '…';
+  if (measure(ellipsis) > maxWidth) return '';
+  const chars = Array.from(text);
+  let best = 0;
+  let lo = 0;
+  let hi = chars.length;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = chars.slice(0, mid).join('') + ellipsis;
+    if (measure(candidate) <= maxWidth) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return chars.slice(0, best).join('') + ellipsis;
+}
+
+function fitted(ctx, text) {
+  if (!text) return '';
+  if (typeof ctx.measureText !== 'function') return text;
+  return fitText(text, TEXT_MAX_WIDTH, (value) => ctx.measureText(value).width);
+}
+
+export function permissionSummaryLine(tool, summary) {
+  return [tool, summary].filter((part) => typeof part === 'string' && part.length > 0).join(' · ');
+}
+
+/**
+ * @param {{ fillStyle: string, font: string, textBaseline: string, fillRect: (x: number, y: number, w: number, h: number) => void, fillText: (text: string, x: number, y: number) => void, measureText?: (text: string) => { width: number } }} ctx
  * @param {string} state
- * @param {{ status?: string, detail?: string, accent?: string, drawText?: boolean }} [options]
+ * @param {{ status?: string, detail?: string, accent?: string, drawText?: boolean, tool?: string, summary?: string }} [options]
  */
 export function drawScreen(ctx, state, options = {}) {
   const accent = options.accent ?? ACCENT[state] ?? MUTED;
@@ -229,16 +272,21 @@ export function drawScreen(ctx, state, options = {}) {
 
   if (!drawText) return;
   ctx.textBaseline = 'top';
-  ctx.font = 'bold 15px sans-serif';
-  ctx.fillStyle = accent;
-  ctx.fillText(status, 14, 200);
-  ctx.font = '11px sans-serif';
-  ctx.fillStyle = MUTED;
-  ctx.fillText(detail, 14, 220);
+  if (state === 'permission') {
+    const summaryLine = permissionSummaryLine(options.tool, options.summary) || detail || status;
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillStyle = accent;
+    ctx.fillText(fitted(ctx, summaryLine), TEXT_X, 200);
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = MUTED;
+    ctx.fillText(PERMISSION_HINT, TEXT_X, 220);
+  } else {
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillStyle = accent;
+    ctx.fillText(status, TEXT_X, 200);
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = MUTED;
+    ctx.fillText(fitted(ctx, detail), TEXT_X, 220);
+  }
   ctx.fillText('P. pi', 262, 6);
-}
-
-export function permissionDetail(tool, summary) {
-  const main = [tool, summary].filter((part) => typeof part === 'string' && part.length > 0).join(' · ');
-  return `${main}   短按允许 · 长按拒绝`;
 }

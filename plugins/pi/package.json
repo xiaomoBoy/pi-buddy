@@ -1,0 +1,33 @@
+{
+  "name": "pi-buddy-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi coding agent extension: sync status to P 仔, approve dangerous commands, and receive voice tasks",
+  "keywords": [
+    "pi-package"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test --test-concurrency=1 test/*.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@types/node": "^22.19.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "ws": "^8.18.3"
+  }
+}
