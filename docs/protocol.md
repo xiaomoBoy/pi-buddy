@@ -2,7 +2,7 @@
 
 桥接程序是唯一的服务端。pi 等智能体的插件通过本机 HTTP 把状态、审批和任务轮询交给桥接程序；实战派设备（或网页模拟器）作为客户端，经 WebSocket 连上同一进程。睡眠不在协议里传输，由设备自己判断。
 
-v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然直接发送 `hello`。网页模拟器从本机打开 `/sim` 时拿到 token，不显示配对码，也不发送 `pair_request`。mDNS 的 TXT 记录仍是 `v=1`。
+v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然直接发送 `hello`。网页模拟器从本机打开 `/sim` 时拿到 token，不显示配对码，也不发送 `pair_request`。mDNS 的 TXT 记录仍是 `v=1`。可选字段 `project`（这次请示来自哪个目录）和 `permission_reply` 的 `via`（`touch`、`button`、`voice`）也记在这一版里；缺省时行为和以前相同。旧设备忽略不认识的字段。
 
 ## 传输
 
@@ -145,6 +145,7 @@ v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然�
 - `source`、`session`：非空字符串。
 - `tool`、`summary`：字符串，可以为空。
 - `timeout_s`：大于 0 且不超过 86400 的有限数字，从这条审批**开始在设备上显示**时起算。同一时间设备只显示一条，其余排队；排队期间不计时，避免还没轮到就被超时。
+- `project`：可选。字符串，最长 32 个 Unicode 码点。用来标明这次请示来自哪个项目。pi 插件填当前工作目录的最后一级目录名；超过 24 个码点时保留前 24 个并在末尾加上 `…`。缺省、不是字符串、或超过 32 个码点时，桥接程序丢掉这个字段，审批照常进行。合法值（包括空字符串）原样放进发给设备的 `permission`。旧设备忽略不认识的字段即可。
 
 请求会挂起，直到可以返回：
 
@@ -152,7 +153,7 @@ v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然�
 {"decision":"allow"}
 ```
 
-`decision` 为 `allow`、`deny`、`timeout`、`no_device` 之一。
+`decision` 为 `allow`、`deny`、`timeout`、`no_device` 之一。设备回复里若带了合法的 `via`，响应里一并带上，例如 `{"decision":"deny","via":"voice"}`。没有合法 `via` 时响应里不出现这个字段。
 
 - 收到请求时没有已通过 hello 的设备：立刻返回 `no_device`，插件应退回终端确认。
 - 设备在等待期间断开，并且已经没有任何在线设备：所有挂起的审批（正在显示的和排队的）立刻返回 `no_device`。
@@ -173,11 +174,12 @@ v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然�
   "tool": "bash",
   "summary": "rm -rf dist",
   "timeout_s": 120,
-  "queue_len": 1
+  "queue_len": 1,
+  "project": "pi-buddy"
 }
 ```
 
-`queue_len` 是还在排队、尚未显示的条数，不含正在显示的这一条。后面又有新请求排入时，桥接程序会用同一个 `id` 再发一条 `permission`，只为更新 `queue_len`。设备应按 `id` 更新，不要当成新的一条。
+`queue_len` 是还在排队、尚未显示的条数，不含正在显示的这一条。后面又有新请求排入时，桥接程序会用同一个 `id` 再发一条 `permission`，只为更新 `queue_len`。设备应按 `id` 更新，不要当成新的一条。`project` 只在插件传来了合法值时出现，内容和插件发来的相同；没有这个字段时不要当成空项目名。旧设备忽略它即可。`timeout_s` 的单位是秒，和插件请求里的数字相同。插件默认发送 `120`，桥接程序按这个秒数计时，到点发送 `permission_cancel`（`reason` 为 `timeout`）。
 
 `permission_cancel`
 
@@ -197,10 +199,18 @@ v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然�
 `permission_reply`
 
 ```json
-{"type":"permission_reply","id":"<uuid>","decision":"allow"}
+{"type":"permission_reply","id":"<uuid>","decision":"allow","via":"touch"}
 ```
 
 `decision` 只能是 `allow` 或 `deny`。`id` 必须是当前正在显示的那一条；其他回复被忽略。有多台设备同时在线时，先到达的有效回复生效。
+
+`via` 可选，表示这次决定是怎么做出的：
+
+- `touch`：屏幕上点的「允许」或「拒绝」
+- `button`：BOOT 键（按住 1 秒允许，短按拒绝）
+- `voice`：语音
+
+缺省视为未知。值不是这三个字符串时，桥接程序忽略 `via`，回复仍然有效。日志会打印这次回复的 via，未知记为 `unknown`。`POST /v1/permission` 的响应在 `via` 合法时带上它；没有合法 `via` 时响应里不出现这个字段。pi 插件在 `via` 为 `voice` 且决定是拒绝时，原因是「用户在 P 仔上用语音拒绝了这条命令，命令没有执行」；其他来源（包括未知、`touch`、`button`）仍是「用户在 P 仔上拒绝了这条命令，命令没有执行」。允许和超时不因 `via` 改文案。
 
 ## 插件：语音任务
 
@@ -255,4 +265,4 @@ v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然�
 
 画面是 320×240 的 canvas，CSS 显示为 640×480（2 倍），`image-rendering: pixelated`，像素不插值。形象与 `assets/mascot/draw.py` 一致：网格 `S=7`，原点 `(112, 44)`，七种状态为 `idle`、`thinking`、`working`、`permission`、`done`、`error`、`sleep`。状态栏在 `y=196`，左侧 4 像素为当前状态的强调色。中文使用系统无衬线字体。
 
-状态栏的 `detail` 使用桥接程序发来的 `detail`。`permission` 时改为显示 `tool`、`summary`，以及「BOOT：按住允许，短按拒绝」。页面上的「允许（按住 BOOT）」和「拒绝（短按 BOOT）」发送 `permission_reply`。输入框发送 `task`。
+状态栏的 `detail` 使用桥接程序发来的 `detail`。`permission` 时改为显示 `tool`、`summary`，以及「BOOT：按住允许，短按拒绝」。页面上的「允许（按住 BOOT）」和「拒绝（短按 BOOT）」发送 `permission_reply`，并带 `via` 为 `touch`。有项目名时，画面左上角显示「项目名 · 剩余秒数」，剩余秒数从这条 `permission` 第一次出现开始按 `timeout_s` 倒数；同一个 `id` 再次到来（只为更新 `queue_len`）不重置倒计时。没有项目名时左上角只显示剩余秒数。输入框发送 `task`。

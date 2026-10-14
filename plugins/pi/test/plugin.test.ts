@@ -6,10 +6,12 @@ import { WebSocket, type RawData } from 'ws';
 import { startBridge, type RunningBridge } from '../../../bridge/src/server.js';
 import extension from '../index.ts';
 import {
+  PERMISSION_TIMEOUT_S,
   doneDetail,
   isDangerousCommand,
   needsApproval,
   permissionSummary,
+  projectName,
   shortenPaths,
   turnDetail,
   workingDetail,
@@ -38,6 +40,7 @@ interface Harness {
 interface TestContext {
   mode: 'tui' | 'rpc' | 'print' | 'json';
   hasUI: boolean;
+  cwd?: string;
   model?: { name: string };
   sessionManager: { getSessionId: () => string };
   ui: {
@@ -88,6 +91,7 @@ function createHarness(): Harness {
 function createCtx(options?: {
   mode?: TestContext['mode'];
   hasUI?: boolean;
+  cwd?: string;
   model?: string;
   sessionId?: string;
   confirm?: TestContext['ui']['confirm'];
@@ -97,6 +101,7 @@ function createCtx(options?: {
   const ctx: TestContext = {
     mode: options?.mode ?? 'tui',
     hasUI: options?.hasUI ?? true,
+    cwd: options?.cwd,
     model: options?.model ? { name: options.model } : undefined,
     sessionManager: { getSessionId: () => options?.sessionId ?? 'sess-1' },
     ui: {
@@ -433,6 +438,7 @@ describe('pi plugin', { concurrency: 1 }, () => {
       const shown = await device.waitFor((message) => message.type === 'permission');
       assert.equal(shown.tool, 'bash');
       assert.equal(String(shown.summary).length, 80);
+      assert.equal(shown.timeout_s, 120);
       assert.equal(String(shown.summary).startsWith('rm -rf '), true);
       device.ws.send(JSON.stringify({ type: 'permission_reply', id: shown.id, decision: 'allow' }));
       assert.equal(await allowPending, undefined);
@@ -738,6 +744,119 @@ describe('pi plugin', { concurrency: 1 }, () => {
         device.ws.close();
         await harness.emit({ type: 'session_shutdown', reason: 'quit' }, ctx);
       }
+    });
+  });
+
+  it('插件默认审批等待是 120 秒', () => {
+    assert.equal(PERMISSION_TIMEOUT_S, 120);
+  });
+
+  it('chmod 0777 和 1777 算危险命令', () => {
+    assert.equal(isDangerousCommand('chmod 0777 /tmp/x'), true);
+    assert.equal(isDangerousCommand('chmod -R 0777 /tmp/x'), true);
+    assert.equal(isDangerousCommand('chmod 1777 /tmp/x'), true);
+    assert.equal(isDangerousCommand('chown 0777 file'), true);
+    assert.equal(isDangerousCommand('chmod 755 file'), false);
+    assert.equal(isDangerousCommand('chmod 644 file'), false);
+    assert.equal(isDangerousCommand('chmod 7770 file'), false);
+  });
+
+  it('语音拒绝使用专门的原因文字，其他 via 保持原文', async () => {
+    await withBridge(async (bridge) => {
+      const device = openDevice(bridge.port, bridge.token);
+      const harness = createHarness();
+      await device.ready;
+      await device.waitFor((message) => message.type === 'state');
+      const confirm = (_title: string, _message: string, opts?: { signal?: AbortSignal }) =>
+        new Promise<boolean>((resolve) => {
+          opts?.signal?.addEventListener('abort', () => resolve(false));
+        });
+
+      const cases: Array<{ command: string; via?: string; reason: string }> = [
+        {
+          command: 'rm -rf dist',
+          via: 'voice',
+          reason: '用户在 P 仔上用语音拒绝了这条命令，命令没有执行',
+        },
+        {
+          command: 'sudo reboot',
+          via: 'touch',
+          reason: '用户在 P 仔上拒绝了这条命令，命令没有执行',
+        },
+        {
+          command: 'git push -f',
+          via: 'button',
+          reason: '用户在 P 仔上拒绝了这条命令，命令没有执行',
+        },
+        {
+          command: 'npm publish',
+          reason: '用户在 P 仔上拒绝了这条命令，命令没有执行',
+        },
+        {
+          command: 'git reset --hard',
+          via: 'shout',
+          reason: '用户在 P 仔上拒绝了这条命令，命令没有执行',
+        },
+      ];
+
+      for (const item of cases) {
+        const { ctx } = createCtx({ mode: 'rpc', hasUI: true, confirm });
+        const pending = harness.emit(
+          { type: 'tool_call', toolCallId: item.command, toolName: 'bash', input: { command: item.command } },
+          ctx,
+        );
+        const shown = await device.waitFor(
+          (message) => message.type === 'permission' && message.summary === item.command,
+        );
+        const reply: Record<string, unknown> = { type: 'permission_reply', id: shown.id, decision: 'deny' };
+        if (item.via !== undefined) reply.via = item.via;
+        device.ws.send(JSON.stringify(reply));
+        assert.deepEqual(await pending, { block: true, reason: item.reason });
+      }
+      device.ws.close();
+    });
+  });
+
+  it('请示带上项目名，超过 24 个字符截断并加上省略号', async () => {
+    assert.equal(projectName(undefined), undefined);
+    assert.equal(projectName(''), undefined);
+    assert.equal(projectName('/'), undefined);
+    assert.equal(projectName('/work/pi-buddy'), 'pi-buddy');
+    assert.equal(projectName(`/work/${'a'.repeat(24)}`), 'a'.repeat(24));
+    assert.equal(projectName(`/work/${'b'.repeat(25)}`), `${'b'.repeat(24)}…`);
+    assert.equal(projectName(`/work/${'项'.repeat(25)}`), `${'项'.repeat(24)}…`);
+
+    await withBridge(async (bridge) => {
+      const device = openDevice(bridge.port, bridge.token);
+      const harness = createHarness();
+      await device.ready;
+      await device.waitFor((message) => message.type === 'state');
+      const confirm = (_title: string, _message: string, opts?: { signal?: AbortSignal }) =>
+        new Promise<boolean>((resolve) => {
+          opts?.signal?.addEventListener('abort', () => resolve(false));
+        });
+
+      const ask = async (cwd: string) => {
+        const { ctx } = createCtx({ mode: 'rpc', hasUI: true, cwd, confirm });
+        const pending = harness.emit(
+          { type: 'tool_call', toolCallId: cwd, toolName: 'bash', input: { command: 'rm -rf dist' } },
+          ctx,
+        );
+        const shown = await device.waitFor((message) => message.type === 'permission' && message.summary === 'rm -rf dist');
+        assert.equal(shown.timeout_s, 120);
+        device.ws.send(JSON.stringify({ type: 'permission_reply', id: shown.id, decision: 'allow' }));
+        assert.equal(await pending, undefined);
+        return shown;
+      };
+
+      const named = await ask('/Users/me/projects/pi-buddy');
+      assert.equal(named.project, 'pi-buddy');
+      assert.equal(named.via, undefined);
+
+      const longName = 'c'.repeat(30);
+      const truncated = await ask(`/tmp/${longName}`);
+      assert.equal(truncated.project, `${'c'.repeat(24)}…`);
+      device.ws.close();
     });
   });
 });

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { PERMISSION_HINT, TEXT_MAX_WIDTH, drawScreen, fitText } from '../public/mascot.js';
+import { PERMISSION_HINT, TEXT_MAX_WIDTH, drawScreen, fitText, permissionCornerLabel, simulatorPermissionReply } from '../public/mascot.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATES = ['idle', 'thinking', 'working', 'permission', 'done', 'error', 'sleep'] as const;
@@ -158,5 +158,47 @@ describe('mascot canvas', () => {
         }
       }
     }
+  });
+
+  it('请示左上角是项目名和剩余秒数', () => {
+    assert.equal(permissionCornerLabel('pi-buddy', 120), 'pi-buddy · 120');
+    assert.equal(permissionCornerLabel('pi-buddy', 119.2), 'pi-buddy · 120');
+    assert.equal(permissionCornerLabel('pi-buddy', 0), 'pi-buddy · 0');
+    assert.equal(permissionCornerLabel('', 12), '12');
+    assert.equal(permissionCornerLabel(undefined, 8), '8');
+
+    const calls: Array<{ text: string; x: number; y: number }> = [];
+    const ctx = {
+      fillStyle: '#000000',
+      font: '',
+      textBaseline: 'top',
+      fillRect() {},
+      measureText(text: string) {
+        return { width: Array.from(text).length * 10 };
+      },
+      fillText(text: string, x: number, y: number) {
+        calls.push({ text, x, y });
+      },
+    };
+    drawScreen(ctx, 'permission', { tool: 'bash', summary: 'rm -rf dist', corner: 'pi-buddy · 120' });
+    assert.deepEqual(
+      calls.find((call) => call.y === 6 && call.x === 8),
+      { text: 'pi-buddy · 120', x: 8, y: 6 },
+    );
+  });
+
+  it('模拟器审批回复带 via touch', () => {
+    assert.deepEqual(simulatorPermissionReply('abc', 'deny'), {
+      type: 'permission_reply',
+      id: 'abc',
+      decision: 'deny',
+      via: 'touch',
+    });
+    assert.deepEqual(simulatorPermissionReply('abc', 'allow'), {
+      type: 'permission_reply',
+      id: 'abc',
+      decision: 'allow',
+      via: 'touch',
+    });
   });
 });

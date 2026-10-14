@@ -1,4 +1,4 @@
-import { ACCENT, STATUS, drawScreen } from './mascot.js';
+import { ACCENT, STATUS, drawScreen, permissionCornerLabel, simulatorPermissionReply } from './mascot.js';
 
 const boot = JSON.parse(document.getElementById('boot').textContent || '{}');
 const canvas = document.getElementById('screen');
@@ -21,11 +21,14 @@ const model = {
   detail: '',
   tool: '',
   summary: '',
+  project: '',
   permissionId: null,
   queueLen: 0,
+  deadlineMs: 0,
 };
 let sleeping = false;
 let sleepTimer = 0;
+let cornerTimer = 0;
 let socket = null;
 let reconnectTimer = 0;
 
@@ -46,17 +49,32 @@ function wake() {
   armSleep();
 }
 
+function syncCornerTimer() {
+  const active = Boolean(model.permissionId);
+  if (active && !cornerTimer) {
+    cornerTimer = window.setInterval(() => {
+      render();
+    }, 250);
+  } else if (!active && cornerTimer) {
+    window.clearInterval(cornerTimer);
+    cornerTimer = 0;
+  }
+}
+
 function render() {
   const state = sleeping ? 'sleep' : model.state;
   let detail = model.detail;
   if (state === 'sleep') detail = '闲置 5 分钟 · 摸一下屏幕叫醒';
   const permission = state === 'permission';
+  const secondsLeft = model.deadlineMs > 0 ? (model.deadlineMs - Date.now()) / 1000 : 0;
+  const corner = permission && model.permissionId ? permissionCornerLabel(model.project, secondsLeft) : '';
   drawScreen(ctx, state, {
     status: STATUS[state] ?? '',
     detail,
     accent: ACCENT[state],
     tool: permission ? model.tool : '',
     summary: permission ? model.summary || model.detail : '',
+    corner,
   });
   const pending = Boolean(model.permissionId) && socket && socket.readyState === WebSocket.OPEN;
   allowBtn.disabled = !pending;
@@ -68,6 +86,7 @@ function render() {
     queueEl.hidden = true;
     queueEl.textContent = '';
   }
+  syncCornerTimer();
 }
 
 function setLink(text) {
@@ -78,8 +97,10 @@ function reply(decision) {
   if (!model.permissionId || !socket || socket.readyState !== WebSocket.OPEN) return;
   const id = model.permissionId;
   model.permissionId = null;
+  model.project = '';
+  model.deadlineMs = 0;
   render();
-  socket.send(JSON.stringify({ type: 'permission_reply', id, decision }));
+  socket.send(JSON.stringify(simulatorPermissionReply(id, decision)));
 }
 
 allowBtn.addEventListener('click', () => reply('allow'));
@@ -122,24 +143,39 @@ function onMessage(raw) {
       model.permissionId = null;
       model.tool = '';
       model.summary = '';
+      model.project = '';
       model.queueLen = 0;
+      model.deadlineMs = 0;
     }
     wake();
     render();
     return;
   }
   if (msg.type === 'permission') {
+    const id = typeof msg.id === 'string' ? msg.id : null;
+    const fresh = id !== model.permissionId;
     model.state = 'permission';
-    model.permissionId = typeof msg.id === 'string' ? msg.id : null;
+    model.permissionId = id;
     model.tool = typeof msg.tool === 'string' ? msg.tool : '';
     model.summary = typeof msg.summary === 'string' ? msg.summary : '';
     model.queueLen = typeof msg.queue_len === 'number' ? msg.queue_len : 0;
+    if (typeof msg.project === 'string') model.project = msg.project;
+    else if (fresh) model.project = '';
+    if (fresh) {
+      const timeoutS =
+        typeof msg.timeout_s === 'number' && Number.isFinite(msg.timeout_s) && msg.timeout_s > 0
+          ? msg.timeout_s
+          : 120;
+      model.deadlineMs = Date.now() + timeoutS * 1000;
+    }
     wake();
     render();
     return;
   }
   if (msg.type === 'permission_cancel' && msg.id === model.permissionId) {
     model.permissionId = null;
+    model.project = '';
+    model.deadlineMs = 0;
     render();
   }
 }

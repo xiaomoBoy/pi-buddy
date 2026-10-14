@@ -1,6 +1,7 @@
 /** Pure helpers for the pi-buddy pi extension. */
 
 import os from 'node:os';
+import path from 'node:path';
 
 export type ApprovalMode = 'off' | 'dangerous' | 'bash';
 
@@ -16,8 +17,23 @@ export const IDLE_AFTER_MS = 60_000;
 export const TASK_RETRY_MS = 5_000;
 export const SUMMARY_LIMIT = 40;
 export const PERMISSION_LIMIT = 80;
+/** Basename sent as `project`. Longer names keep this many characters and add "…". */
+export const PROJECT_NAME_LIMIT = 24;
 
 const SHORT_FLAG = /^-[A-Za-z]{1,5}$/;
+
+/**
+ * Last path segment of `cwd`, for the optional permission `project` field.
+ * More than 24 Unicode code points is cut to 24 and suffixed with "…".
+ */
+export function projectName(cwd: string | undefined): string | undefined {
+  if (typeof cwd !== 'string' || cwd.length === 0) return undefined;
+  const base = path.basename(cwd);
+  if (!base || base === '.' || base === '..') return undefined;
+  const chars = Array.from(base);
+  if (chars.length <= PROJECT_NAME_LIMIT) return base;
+  return `${chars.slice(0, PROJECT_NAME_LIMIT).join('')}…`;
+}
 
 export function bridgeBase(): string {
   const raw = process.env.PI_BUDDY_URL?.trim() || 'http://127.0.0.1:4317';
@@ -103,8 +119,13 @@ function isHardReset(command: string): boolean {
   return /\bgit\s+reset\b/i.test(command) && /(?:^|\s)--hard(?:\s|$)/i.test(command);
 }
 
+/**
+ * World-writable modes end in 777. `\b777\b` misses the usual octal spellings
+ * `0777` and `1777`, because the leading digit eats the word boundary.
+ */
 function isWorldMode(command: string): boolean {
-  return /\b(?:chmod|chown)\b/i.test(command) && /\b777\b/.test(command);
+  if (!/\b(?:chmod|chown)\b/i.test(command)) return false;
+  return command.split(/\s+/).some((token) => /^[0-7]*777$/.test(token));
 }
 
 function isPipedShell(command: string): boolean {

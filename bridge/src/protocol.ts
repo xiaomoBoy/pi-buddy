@@ -99,6 +99,28 @@ export function isPairCode(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9]{6}$/.test(value);
 }
 
+export const REPLY_VIAS = ['touch', 'button', 'voice'] as const;
+export type ReplyVia = (typeof REPLY_VIAS)[number];
+
+/** A missing or unrecognized `via` is unknown. The reply itself still stands. */
+export function normalizeReplyVia(value: unknown): ReplyVia | undefined {
+  if (value === 'touch' || value === 'button' || value === 'voice') return value;
+  return undefined;
+}
+
+/** Unicode code points, not UTF-16 code units. */
+export const MAX_PROJECT_CHARS = 32;
+
+/**
+ * Keep a legal `project` string. Anything else is dropped and the permission continues.
+ * An empty string is legal and is forwarded as-is.
+ */
+export function normalizeProject(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (Array.from(value).length > MAX_PROJECT_CHARS) return undefined;
+  return value;
+}
+
 /**
  * Pick one summary for the device.
  * Equal priority: the later snapshot wins (callers append the most recently updated session last).

@@ -36,6 +36,7 @@ async function withBridge(
     pairTimeoutMs?: number;
     taskPollMs?: number;
     token?: string;
+    silent?: boolean;
     onPairRequest?: (deviceId: string) => void;
   } = {},
 ): Promise<void> {
@@ -44,7 +45,7 @@ async function withBridge(
     port: 0,
     token: options.token ?? 'test-token',
     mdns: false,
-    silent: true,
+    silent: options.silent ?? true,
     helloTimeoutMs: options.helloTimeoutMs ?? 400,
     pairTimeoutMs: options.pairTimeoutMs,
     taskPollMs: options.taskPollMs ?? 250,
@@ -313,6 +314,7 @@ describe('pi-buddy bridge', () => {
       await device.ready;
       const pending = postJson(bridge.port, '/v1/permission', permissionBody('slow', 0.3)).then((res) => res.json());
       const shown = await device.waitFor((message) => message.type === 'permission' && message.summary === 'slow');
+      assert.equal(shown.timeout_s, 0.3);
       const cancelled = await device.waitFor((message) => message.type === 'permission_cancel');
       assert.equal(cancelled.id, shown.id);
       assert.equal(cancelled.reason, 'timeout');
@@ -831,5 +833,124 @@ describe('pi-buddy bridge', () => {
       assert.match(usage.stderr, /pi-buddy-bridge pair <code>/);
       device.ws.close();
     }, { onPairRequest: arrival.onPairRequest });
+  });
+
+  it('permission_reply 的 via 合法时进入响应和日志，非法时忽略但仍接受回复', async () => {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((part) => String(part)).join(' '));
+      original.apply(console, args);
+    };
+    try {
+      await withBridge(async (bridge) => {
+        const device = openDevice(bridge.port, bridge.token);
+        await device.ready;
+        const decide = async (summary: string, decision: 'allow' | 'deny', via?: unknown) => {
+          const pending = postJson(bridge.port, '/v1/permission', permissionBody(summary, 5)).then((res) => res.json());
+          const shown = await device.waitFor(
+            (message) => message.type === 'permission' && message.summary === summary,
+          );
+          const reply: Record<string, unknown> = { type: 'permission_reply', id: shown.id, decision };
+          if (via !== undefined) reply.via = via;
+          device.ws.send(JSON.stringify(reply));
+          return pending;
+        };
+        assert.deepEqual(await decide('voice-deny', 'deny', 'voice'), { decision: 'deny', via: 'voice' });
+        assert.deepEqual(await decide('touch-deny', 'deny', 'touch'), { decision: 'deny', via: 'touch' });
+        assert.deepEqual(await decide('button-allow', 'allow', 'button'), { decision: 'allow', via: 'button' });
+        assert.deepEqual(await decide('bad-via', 'deny', 'shout'), { decision: 'deny' });
+        assert.deepEqual(await decide('numeric-via', 'deny', 1), { decision: 'deny' });
+        assert.deepEqual(await decide('missing-via', 'deny'), { decision: 'deny' });
+        device.ws.close();
+      }, { silent: false });
+    } finally {
+      console.log = original;
+    }
+    assert.ok(lines.some((line) => line.includes('permission reply deny via=voice')));
+    assert.ok(lines.some((line) => line.includes('permission reply allow via=button')));
+    assert.ok(lines.some((line) => line.includes('permission reply deny via=unknown')));
+  });
+
+  it('permission 的 project 合法时原样转发，非法时丢掉且审批继续', async () => {
+    await withBridge(async (bridge) => {
+      const device = openDevice(bridge.port, bridge.token);
+      await device.ready;
+      const emoji = '😀';
+      const send = async (summary: string, project?: unknown) => {
+        const body: Record<string, unknown> = permissionBody(summary, 5);
+        if (project !== undefined) body.project = project;
+        const pending = postJson(bridge.port, '/v1/permission', body).then((res) => res.json());
+        const shown = await device.waitFor(
+          (message) => message.type === 'permission' && message.summary === summary && message.queue_len === 0,
+        );
+        return { pending, shown };
+      };
+      const finish = async (id: unknown, decision: 'allow' | 'deny', pending: Promise<unknown>) => {
+        device.ws.send(JSON.stringify({ type: 'permission_reply', id, decision }));
+        assert.deepEqual(await pending, { decision });
+      };
+
+      const first = await send('alpha-job', 'alpha');
+      assert.equal(first.shown.project, 'alpha');
+      const queuedBody: Record<string, unknown> = permissionBody('beta-job', 5);
+      queuedBody.project = 'beta';
+      const second = postJson(bridge.port, '/v1/permission', queuedBody).then((res) => res.json());
+      const updated = await device.waitFor(
+        (message) => message.type === 'permission' && message.summary === 'alpha-job' && message.queue_len === 1,
+      );
+      assert.equal(updated.id, first.shown.id);
+      assert.equal(updated.project, 'alpha');
+      await finish(first.shown.id, 'allow', first.pending);
+      const next = await device.waitFor((message) => message.type === 'permission' && message.summary === 'beta-job');
+      assert.equal(next.project, 'beta');
+      assert.equal(next.queue_len, 0);
+      await finish(next.id, 'deny', second);
+
+      const kept = await send('keep-32', 'p'.repeat(32));
+      assert.equal(kept.shown.project, 'p'.repeat(32));
+      await finish(kept.shown.id, 'allow', kept.pending);
+
+      const emojiKept = await send('emoji-32', emoji.repeat(32));
+      assert.equal(emojiKept.shown.project, emoji.repeat(32));
+      await finish(emojiKept.shown.id, 'allow', emojiKept.pending);
+
+      const dropped = await send('too-long', 'p'.repeat(33));
+      assert.equal('project' in dropped.shown, false);
+      await finish(dropped.shown.id, 'allow', dropped.pending);
+
+      const emojiDropped = await send('emoji-33', emoji.repeat(33));
+      assert.equal('project' in emojiDropped.shown, false);
+      await finish(emojiDropped.shown.id, 'deny', emojiDropped.pending);
+
+      const notString = await send('not-string', 12);
+      assert.equal('project' in notString.shown, false);
+      await finish(notString.shown.id, 'allow', notString.pending);
+
+      const empty = await send('empty-project', '');
+      assert.equal(empty.shown.project, '');
+      await finish(empty.shown.id, 'allow', empty.pending);
+      device.ws.close();
+    });
+  });
+
+  it('service --help 打印子命令用法', async () => {
+    const help = await runCli(['service', '--help'], { ...process.env });
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /pi-buddy-bridge service <install\|uninstall\|status>/);
+    assert.match(help.stdout, /dev\.pibuddy\.bridge/);
+    assert.match(help.stdout, /只支持 macOS/);
+    const installHelp = await runCli(['service', 'install', '--help'], { ...process.env });
+    assert.equal(installHelp.status, 0);
+    assert.equal(installHelp.stdout, help.stdout);
+  });
+
+  it('非 macOS 上 service 命令提示只支持 macOS', async () => {
+    if (process.platform === 'darwin') return;
+    for (const args of [['service'], ['service', 'install'], ['service', 'uninstall'], ['service', 'status']]) {
+      const result = await runCli(args, { ...process.env });
+      assert.notEqual(result.status, 0, args.join(' '));
+      assert.equal(result.stderr, '只支持 macOS\n', `${args.join(' ')} stderr=${result.stderr}`);
+    }
   });
 });

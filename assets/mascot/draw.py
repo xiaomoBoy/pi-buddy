@@ -123,7 +123,7 @@ def screen(state):
         for y in range(-1, 3):
             px(d, 12, y, TEAL)                        # 举起的“手臂”
         dot(d, 11, -5, color=AMBER)
-        status, detail, accent = "请示：可以执行吗？", "rm -rf dist   短按 BOOT 允许 · 长按拒绝", AMBER
+        status, detail, accent = "请示：可以执行吗？", "rm -rf dist   按住 BOOT 允许 · 短按拒绝", AMBER
     elif state == "done":
         body(d, dy=-3); eyes(d, "happy", dy=-3)
         dot(d, 13, -5)
