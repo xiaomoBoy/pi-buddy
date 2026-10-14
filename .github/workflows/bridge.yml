@@ -1,0 +1,29 @@
+name: bridge
+
+on:
+  pull_request:
+    paths:
+      - "bridge/**"
+      - ".github/workflows/bridge.yml"
+  push:
+    paths:
+      - "bridge/**"
+      - ".github/workflows/bridge.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y python3-pil
+      - run: npm run typecheck
+      - run: npm test
