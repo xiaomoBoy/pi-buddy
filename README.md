@@ -1,6 +1,6 @@
 # pi-buddy
 
-**中文**：pi-buddy 是 [pi coding agent](https://github.com/badlogic/pi-mono) 的桌面硬件伙伴。屏幕上的吉祥物「P 仔」会跟随智能体的状态变化（思考、执行、等待、完成），你还可以直接在设备上审批智能体要执行的命令。硬件为立创实战派 ESP32-S3。
+**中文**：pi-buddy 是 [pi coding agent](https://github.com/earendil-works/pi) 的桌面硬件伙伴。屏幕上的吉祥物「P 仔」会跟随智能体的状态变化（思考、执行、等待、完成），你还可以直接在设备上审批智能体要执行的命令。硬件为立创实战派 ESP32-S3。
 
 **English**: pi-buddy is a desktop hardware companion for the pi coding agent. The on-screen mascot "P-zai" reacts to the agent's state (thinking, running, waiting, done), and you can approve the agent's commands right on the device. Hardware: LCKFB SZPI ESP32-S3 (立创实战派).
 
