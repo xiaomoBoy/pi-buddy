@@ -110,7 +110,7 @@ private:
             if (agent.HasPendingPermission()) {
                 // 请示出现前就按下的那一下不算
                 if (agent.ConsumeArmed()) {
-                    agent.ReplyPermission(false);
+                    agent.ReplyPermission(false, AgentChannel::Via::Button);
                 }
                 return;
             }
@@ -133,7 +133,7 @@ private:
         boot_button_.OnLongPress([this]() {
             auto& agent = AgentChannel::GetInstance();
             if (agent.HasPendingPermission() && agent.ConsumeArmed()) {
-                agent.ReplyPermission(true);
+                agent.ReplyPermission(true, AgentChannel::Via::Button);
             }
         });
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """把 pi-buddy 板型叠加到小智 subtree 上（幂等，可以重复执行）。
 
-做两件事：
+做三件事：
 1. 把 firmware/boards/pibuddy-szp-s3/ 拷到 firmware/xiaozhi/main/boards/pibuddy/szp-s3/。
 2. 在小智的 main/CMakeLists.txt 和 main/Kconfig.projbuild 里注册板型。
+3. 给自定义唤醒词加一个钩子：action 不是 wake 的命令词（语音审批）交给板型处理。
 
 改动只发生在工作区，提交前用 `git checkout firmware/xiaozhi` 还原，subtree 保持与上游一致。
 升级小智后如果锚点找不到，脚本会报错退出，按报错位置更新下面的锚点即可。
@@ -72,6 +73,26 @@ def main() -> None:
     # 设备端回声消除、表情风格这两处 depends 列表里有实战派，本板型同样适用
     add_to_depends(MAIN / "Kconfig.projbuild", "|| BOARD_TYPE_ESP_VOCAT || BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_RYMCU_BIGSMART")
     add_to_depends(MAIN / "Kconfig.projbuild", "        || BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_RYMCU_BIGSMART || BOARD_TYPE_ESP32_S3_KORVO_2_V3")
+    # 小智只处理 action 为 wake 的命令词，其他的直接忽略；这里转给板型（弱符号，别的板型不受影响）
+    wake_word = MAIN / "audio" / "wake_words" / "custom_wake_word.cc"
+    insert_after(
+        wake_word,
+        '#define TAG "CustomWakeWord"\n',
+        '\n// pi-buddy：不是 wake 的命令词交给板型处理（由 firmware/scripts/prepare.py 叠加）\n'
+        'extern "C" void pibuddy_on_voice_command(const char* action, float prob) __attribute__((weak));\n',
+        "pibuddy_on_voice_command(const char* action",
+    )
+    insert_after(
+        wake_word,
+        '                    if (wake_word_detected_callback_) {\n'
+        '                        wake_word_detected_callback_(last_detected_wake_word_);\n'
+        '                    }\n'
+        '                }',
+        ' else if (pibuddy_on_voice_command) {\n'
+        '                    pibuddy_on_voice_command(command.action.c_str(), mn_result->prob[i]);\n'
+        '                }',
+        "pibuddy_on_voice_command(command.action",
+    )
     print(f"已叠加板型：{DST.relative_to(ROOT)}")
 
 

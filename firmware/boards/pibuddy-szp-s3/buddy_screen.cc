@@ -158,10 +158,13 @@ void BuddyScreen::Init(Display* display) {
     make_button(8, kDeep, "允许", true);
     make_button(164, kCoral, "拒绝", false);
 
+    // 项目名可能是中文，用和状态栏一样的字体；右边留给 "P. pi"
     corner_ = lv_label_create(root_);
-    lv_obj_set_style_text_font(corner_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(corner_, font, 0);
     lv_obj_set_style_text_color(corner_, lv_color_hex(kMuted), 0);
-    lv_obj_set_pos(corner_, 10, 6);
+    lv_obj_set_pos(corner_, 10, 4);
+    lv_obj_set_width(corner_, 244);
+    lv_label_set_long_mode(corner_, LV_LABEL_LONG_MODE_DOTS);
     lv_label_set_text(corner_, "");
     lv_obj_add_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
 
@@ -292,6 +295,7 @@ void BuddyScreen::Render(Face face, const std::string& status, const std::string
             lv_obj_set_style_text_font(detail_, font, 0);
             lv_obj_set_style_text_font(buttons_, font, 0);
             lv_obj_set_style_text_font(hold_, font, 0);
+            lv_obj_set_style_text_font(corner_, font, 0);
         }
     }
     lv_obj_set_style_bg_color(accent_, lv_color_hex(accent), 0);
@@ -307,9 +311,10 @@ void BuddyScreen::Render(Face face, const std::string& status, const std::string
     }
 }
 
-void BuddyScreen::SetCorner(const std::string& text) {
+void BuddyScreen::SetCorner(const std::string& text, uint32_t color) {
     if (root_ == nullptr) return;
     DisplayLockGuard lock(display_);
+    lv_obj_set_style_text_color(corner_, lv_color_hex(color), 0);
     lv_label_set_text(corner_, text.c_str());
 }
 

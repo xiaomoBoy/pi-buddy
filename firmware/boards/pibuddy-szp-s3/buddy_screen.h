@@ -25,8 +25,8 @@ public:
     void OnDecision(std::function<void(bool allow)> callback) { on_decision_ = std::move(callback); }
     // 按住 BOOT 时的进度条：hold_ms 内填满，填满即拒绝；松开提前结束
     void ShowHold(bool show, int hold_ms);
-    // 左上角的小字（请示时显示剩余秒数），空字符串表示不显示
-    void SetCorner(const std::string& text);
+    // 左上角的小字（请示时显示项目名和剩余秒数），空字符串表示不显示
+    void SetCorner(const std::string& text, uint32_t color);
 
 private:
     void DrawMascot(Face face);
