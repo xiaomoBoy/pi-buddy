@@ -53,6 +53,43 @@ export function isLoopback(address: string | undefined | null): boolean {
   return false;
 }
 
+/** Host / Origin hostname the browser may use for this machine. Port is ignored. */
+const LOCAL_BROWSER_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+export function isLocalBrowserHostname(hostname: string | undefined | null): boolean {
+  if (!hostname) return false;
+  return LOCAL_BROWSER_HOSTS.has(hostname.toLowerCase());
+}
+
+/** `Host` header value, any port. Rejects missing, userinfo, and non-local names. */
+export function isLocalHttpHost(hostHeader: string | undefined | null): boolean {
+  if (!hostHeader) return false;
+  const value = hostHeader.trim();
+  if (value.length === 0 || value.includes('@') || /[\s/\\]/.test(value)) return false;
+  try {
+    return isLocalBrowserHostname(new URL(`http://${value}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Browser `Origin` header. Absent origins are not local page origins. */
+export function isLocalPageOrigin(origin: string | undefined | null): boolean {
+  if (!origin) return false;
+  try {
+    return isLocalBrowserHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** `application/json` with an optional charset parameter. */
+export function isJsonContentType(header: string | undefined | null): boolean {
+  if (!header) return false;
+  const media = header.split(';', 1)[0]?.trim().toLowerCase();
+  return media === 'application/json';
+}
+
 /**
  * Pick one summary for the device.
  * Equal priority: the later snapshot wins (callers append the most recently updated session last).

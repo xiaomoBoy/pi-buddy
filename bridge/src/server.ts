@@ -14,6 +14,9 @@ import {
   MDNS_TYPE,
   TASK_POLL_MS,
   aggregateSessions,
+  isJsonContentType,
+  isLocalHttpHost,
+  isLocalPageOrigin,
   isLoopback,
   isSessionState,
   type SessionSnapshot,
@@ -306,6 +309,10 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     const local = isLoopback(req.socket.remoteAddress);
 
     if (method === 'GET' && url.pathname === '/sim') {
+      if (!isLocalHttpHost(req.headers.host)) {
+        sendJson(res, 403, { error: 'forbidden' });
+        return;
+      }
       const html = fs.readFileSync(path.join(PUBLIC_DIR, 'sim.html'), 'utf8');
       const boot = JSON.stringify({ token: local ? token : null, local }).replace(/</g, '\\u003c');
       res.writeHead(200, {
@@ -346,8 +353,12 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
       sendJson(res, 405, { error: 'method_not_allowed' });
       return;
     }
-    if (!local) {
+    if (!local || !isLocalHttpHost(req.headers.host)) {
       sendJson(res, 403, { error: 'forbidden' });
+      return;
+    }
+    if (method === 'POST' && !isJsonContentType(req.headers['content-type'])) {
+      sendJson(res, 415, { error: 'unsupported_media_type' });
       return;
     }
 
@@ -451,7 +462,23 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
   });
 
-  const wss = new WebSocketServer({ server, path: '/v1/device', maxPayload: 1_000_000 });
+  const wss = new WebSocketServer({
+    server,
+    path: '/v1/device',
+    maxPayload: 1_000_000,
+    verifyClient: (info, callback) => {
+      // Devices such as the ESP32 omit Origin. Browsers always send it.
+      if (!info.origin) {
+        callback(true);
+        return;
+      }
+      if (isLocalPageOrigin(info.origin)) {
+        callback(true);
+        return;
+      }
+      callback(false, 403, 'Forbidden');
+    },
+  });
 
   wss.on('connection', (ws) => {
     let authed = false;

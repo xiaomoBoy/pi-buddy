@@ -6,7 +6,9 @@
 
 - 默认监听 `0.0.0.0:4317`（IPv4）。可用环境变量 `PI_BUDDY_PORT` 改端口。
 - 插件请使用 `http://127.0.0.1:4317`。只接受来自 `127.0.0.1` 和 `::1` 的插件请求；运行环境把 IPv4 回环报成 `::ffff:127.0.0.1` 时同样视为本机。其他地址返回 `403 {"error":"forbidden"}`。
-- 设备 WebSocket 路径：`/v1/device`。局域网设备可以连接，不经过插件的回环限制。
+- `GET /sim` 以及插件接口 `POST /v1/event`、`POST /v1/permission`、`GET /v1/tasks` 还要检查 `Host`。主机名必须是 `127.0.0.1`、`localhost` 或 `[::1]`，端口不限；缺失或其他主机名返回 `403 {"error":"forbidden"}`。这样可以挡住 DNS 重绑定：恶意域名即便解析到 `127.0.0.1`，浏览器仍会带上那个域名的 `Host`，读不到模拟器里的 token，也不能调用插件接口。
+- `POST /v1/event` 和 `POST /v1/permission` 的 `Content-Type` 必须是 `application/json`，可以带 `charset` 参数（例如 `application/json; charset=utf-8`）。其他类型，包括浏览器跨站简单请求常用的 `text/plain`，返回 `415 {"error":"unsupported_media_type"}`，正文不会被处理。
+- 设备 WebSocket 路径：`/v1/device`。局域网设备可以连接，不经过插件的回环限制。没有 `Origin` 时仍只做 token 认证（实战派固件不发送 `Origin`）。如果带了 `Origin`（浏览器一定会带），其主机名同样必须是 `127.0.0.1`、`localhost` 或 `[::1]`，否则在握手阶段拒绝，响应 `403`，连接不会建立。网页模拟器从上述主机名打开时，浏览器带上的 `Origin` 可以通过。
 - 每条 WebSocket 消息都是 JSON 对象，并且带字符串字段 `type`。
 
 ## 发现
@@ -200,7 +202,7 @@
 
 ## 网页模拟器
 
-`GET /sim` 返回模拟器页面。只有本机访问时，页面里才会带上设备 token，页面随即以设备身份连接 `/v1/device`（`device_id` 形如 `web-sim-…`，`fw` 为 `sim`，`board` 为 `web`）。非本机打开同一地址时不注入 token，页面不会连接。
+`GET /sim` 返回模拟器页面。`Host` 不是本机名时直接 `403`。`Host` 合法且连接来自回环地址时，页面里才会带上设备 token，页面随即以设备身份连接 `/v1/device`（`device_id` 形如 `web-sim-…`，`fw` 为 `sim`，`board` 为 `web`）。请用 `http://127.0.0.1:4317/sim`、`http://localhost:4317/sim` 或 `http://[::1]:4317/sim` 打开。
 
 画面是 320×240 的 canvas，CSS 显示为 640×480（2 倍），`image-rendering: pixelated`，像素不插值。形象与 `assets/mascot/draw.py` 一致：网格 `S=7`，原点 `(112, 44)`，七种状态为 `idle`、`thinking`、`working`、`permission`、`done`、`error`、`sleep`。状态栏在 `y=196`，左侧 4 像素为当前状态的强调色。中文使用系统无衬线字体。
 

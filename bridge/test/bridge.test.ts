@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -98,8 +99,13 @@ function track(ws: WebSocket): Device['waitFor'] & { messages: Array<Record<stri
   return Object.assign(waitFor, { messages });
 }
 
-function openDevice(port: number, token: string, deviceId = 'dev-test'): Device {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/device`);
+function openDevice(
+  port: number,
+  token: string,
+  deviceId = 'dev-test',
+  headers?: Record<string, string>,
+): Device {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/device`, headers ? { headers } : undefined);
   ws.on('error', () => {});
   const tracked = track(ws);
   const ready = new Promise<void>((resolve, reject) => {
@@ -139,6 +145,36 @@ async function postJson(port: number, pathname: string, body: unknown, host = '1
 
 function permissionBody(summary: string, timeout_s = 5) {
   return { source: 'pi', session: 's', tool: 'bash', summary, timeout_s };
+}
+
+function requestWithHost(
+  port: number,
+  requestPath: string,
+  hostHeader: string,
+  method = 'GET',
+  headers: Record<string, string> = {},
+  body?: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: requestPath,
+        method,
+        headers: { ...headers, host: hostHeader },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 describe('pi-buddy bridge', () => {
@@ -260,9 +296,9 @@ describe('pi-buddy bridge', () => {
       assert.deepEqual(await local.json(), { ok: true });
 
       const remotePage = await fetch(`http://${lan}:${bridge.port}/sim`);
+      assert.equal(remotePage.status, 403);
       const remoteHtml = await remotePage.text();
       assert.equal(remoteHtml.includes(bridge.token), false);
-      assert.match(remoteHtml, /"token":null/);
 
       const localPage = await fetch(`http://127.0.0.1:${bridge.port}/sim`);
       const localHtml = await localPage.text();
@@ -375,5 +411,109 @@ describe('pi-buddy bridge', () => {
     });
     assert.equal(printed.status, 0, printed.stderr);
     assert.equal(printed.stdout.trim(), first.token);
+  });
+
+  it('rejects /sim and /v1/event when Host is not a loopback name', async () => {
+    await withBridge(async (bridge) => {
+      const sim = await requestWithHost(bridge.port, '/sim', 'evil.example');
+      assert.equal(sim.status, 403);
+      assert.equal(sim.body.includes(bridge.token), false);
+      assert.deepEqual(JSON.parse(sim.body), { error: 'forbidden' });
+
+      const event = await requestWithHost(
+        bridge.port,
+        '/v1/event',
+        'evil.example:4317',
+        'POST',
+        { 'content-type': 'application/json' },
+        JSON.stringify({ source: 'pi', session: 's', state: 'idle', detail: 'rebind' }),
+      );
+      assert.equal(event.status, 403);
+      assert.deepEqual(JSON.parse(event.body), { error: 'forbidden' });
+
+      const localhost = await requestWithHost(
+        bridge.port,
+        '/v1/event',
+        `localhost:${bridge.port}`,
+        'POST',
+        { 'content-type': 'application/json' },
+        JSON.stringify({ source: 'pi', session: 's', state: 'idle', detail: 'via-localhost' }),
+      );
+      assert.equal(localhost.status, 200);
+
+      const v6 = await requestWithHost(bridge.port, '/sim', `[::1]:${bridge.port}`);
+      assert.equal(v6.status, 200);
+      assert.match(v6.body, new RegExp(`"token":"${bridge.token}"`));
+    });
+  });
+
+  it('rejects text/plain plugin POSTs', async () => {
+    await withBridge(async (bridge) => {
+      const device = openDevice(bridge.port, bridge.token);
+      await device.ready;
+      const forged = JSON.stringify({
+        source: 'pi',
+        session: 's',
+        state: 'error',
+        detail: 'forged-from-page',
+      });
+      const event = await fetch(`http://127.0.0.1:${bridge.port}/v1/event`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: forged,
+      });
+      assert.equal(event.status, 415);
+      assert.deepEqual(await event.json(), { error: 'unsupported_media_type' });
+
+      const permission = await fetch(`http://127.0.0.1:${bridge.port}/v1/permission`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: JSON.stringify(permissionBody('forged', 5)),
+      });
+      assert.equal(permission.status, 415);
+
+      const charset = await fetch(`http://127.0.0.1:${bridge.port}/v1/event`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ source: 'pi', session: 's', state: 'idle', detail: 'json-charset' }),
+      });
+      assert.equal(charset.status, 200);
+      await device.waitFor((message) => message.type === 'state' && message.detail === 'json-charset');
+      assert.equal(
+        device.messages.some((message) => message.detail === 'forged-from-page'),
+        false,
+      );
+      device.ws.close();
+    });
+  });
+
+  it('rejects an external Origin WebSocket handshake and accepts a local Origin', async () => {
+    await withBridge(async (bridge) => {
+      const evil = new WebSocket(`ws://127.0.0.1:${bridge.port}/v1/device`, {
+        headers: { Origin: 'https://evil.example' },
+      });
+      evil.on('error', () => {});
+      const status = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('external origin handshake did not fail')), 2000);
+        evil.on('open', () => {
+          clearTimeout(timer);
+          reject(new Error('external origin was accepted'));
+        });
+        evil.on('unexpected-response', (_request, response) => {
+          clearTimeout(timer);
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+      });
+      assert.equal(status, 403);
+
+      const device = openDevice(bridge.port, bridge.token, 'web-sim', {
+        Origin: `http://127.0.0.1:${bridge.port}`,
+      });
+      await device.ready;
+      const ack = device.messages.find((message) => message.type === 'hello_ack');
+      assert.equal(ack?.v, 1);
+      device.ws.close();
+    });
   });
 });
