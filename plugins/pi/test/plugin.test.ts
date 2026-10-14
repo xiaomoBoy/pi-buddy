@@ -10,6 +10,7 @@ import {
   isDangerousCommand,
   needsApproval,
   permissionSummary,
+  shortenPaths,
   turnDetail,
   workingDetail,
 } from '../src/rules.ts';
@@ -290,6 +291,31 @@ describe('pi plugin', { concurrency: 1 }, () => {
     assert.equal(workingDetail('bash', { command: 'a'.repeat(50) }), `bash · ${'a'.repeat(40)}`);
     assert.equal(permissionSummary(`rm -rf ${'b'.repeat(100)}`).length, 80);
     assert.equal(doneDetail(3, 2), '用时 3 秒 · 2 次工具调用');
+
+    const roots = { cwd: '/Users/me/proj', home: '/Users/me' };
+    assert.equal(
+      shortenPaths('rm -rf /Users/me/proj/dist /Users/me/.cache/x', roots),
+      'rm -rf ./dist ~/.cache/x',
+    );
+    assert.equal(shortenPaths('/Users/me/proj', roots), '.');
+    assert.equal(shortenPaths('/Users/me', roots), '~');
+    assert.equal(shortenPaths('rm -rf "/Users/me/proj/a b"', roots), 'rm -rf "./a b"');
+    assert.equal(shortenPaths('--file=/Users/me/proj/out', roots), '--file=./out');
+    assert.equal(shortenPaths('rm -rf /Users/me/project-extra', roots), 'rm -rf ~/project-extra');
+    assert.equal(shortenPaths('rm -rf /tmp/keep', roots), 'rm -rf /tmp/keep');
+    assert.equal(
+      workingDetail('read', { path: '/Users/me/proj/src/index.ts' }, roots),
+      'read · ./src/index.ts',
+    );
+    assert.equal(
+      workingDetail('edit', { path: '/Users/me/.config/pi.json' }, roots),
+      'edit · ~/.config/pi.json',
+    );
+    const longPath = `${roots.cwd}/${'n'.repeat(90)}`;
+    assert.equal(workingDetail('read', { path: longPath }, roots), `read · ./${'n'.repeat(38)}`);
+    const summary = permissionSummary(`rm -rf ${longPath}`, roots);
+    assert.equal(summary, `rm -rf ./${'n'.repeat(71)}`);
+    assert.equal(summary.length, 80);
   });
 
   it('一次完整的运行按顺序产生 idle → thinking → working → thinking → done', async () => {

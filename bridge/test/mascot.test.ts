@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { drawScreen } from '../public/mascot.js';
+import { PERMISSION_HINT, TEXT_MAX_WIDTH, drawScreen, fitText } from '../public/mascot.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATES = ['idle', 'thinking', 'working', 'permission', 'done', 'error', 'sleep'] as const;
@@ -84,6 +84,50 @@ describe('mascot canvas', () => {
 
     const error = render('error');
     assert.deepEqual(pixel(error, 112 + 4 * 7, 44 + 3 * 7), CORAL);
+  });
+
+  it('fits status text to the screen width and splits permission into two lines', () => {
+    const widthOf = (text: string) => Array.from(text).length * 10;
+    assert.equal(fitText('bash · npm test', 200, widthOf), 'bash · npm test');
+    const fitted = fitText('a'.repeat(40), 100, widthOf);
+    assert.equal(fitted, `${'a'.repeat(9)}…`);
+    assert.ok(widthOf(fitted) <= 100);
+    assert.equal(fitText('太长了', 10, widthOf), '…');
+
+    const calls: Array<{ text: string; x: number; y: number; font: string }> = [];
+    const ctx = {
+      fillStyle: '#000000',
+      font: '',
+      textBaseline: 'top',
+      fillRect() {},
+      measureText(text: string) {
+        return { width: widthOf(text) };
+      },
+      fillText(text: string, x: number, y: number) {
+        calls.push({ text, x, y, font: ctx.font });
+      },
+    };
+    const summary = `rm -rf ${'/very/long/path/'.repeat(8)}`;
+    drawScreen(ctx, 'permission', { tool: 'bash', summary, status: '请示：可以执行吗？' });
+    const line1 = calls.find((call) => call.y === 200);
+    const line2 = calls.find((call) => call.y === 220);
+    assert.ok(line1);
+    assert.equal(line1.font, 'bold 15px sans-serif');
+    assert.equal(line1.x, 14);
+    assert.ok(line1.text.startsWith('bash · rm -rf '));
+    assert.ok(line1.text.endsWith('…'));
+    assert.ok(widthOf(line1.text) <= TEXT_MAX_WIDTH);
+    assert.ok(widthOf(`${line1.text.slice(0, -1)}x…`) > TEXT_MAX_WIDTH);
+    assert.deepEqual(line2, { text: PERMISSION_HINT, x: 14, y: 220, font: '11px sans-serif' });
+
+    calls.length = 0;
+    const detail = 'turn 1 · model '.repeat(20);
+    drawScreen(ctx, 'thinking', { status: '思考中', detail });
+    const thinkingDetail = calls.find((call) => call.y === 220);
+    assert.ok(thinkingDetail);
+    assert.ok(thinkingDetail.text.endsWith('…'));
+    assert.ok(widthOf(thinkingDetail.text) <= TEXT_MAX_WIDTH);
+    assert.equal(calls.find((call) => call.y === 200)?.text, '思考中');
   });
 
   it('matches assets/mascot/draw.py cell pixels for all 7 states', () => {

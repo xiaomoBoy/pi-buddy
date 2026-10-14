@@ -1,6 +1,13 @@
 /** Pure helpers for the pi-buddy pi extension. */
 
+import os from 'node:os';
+
 export type ApprovalMode = 'off' | 'dangerous' | 'bash';
+
+export interface PathRoots {
+  cwd?: string;
+  home?: string;
+}
 
 export const SOURCE = 'pi';
 export const EVENT_TIMEOUT_MS = 500;
@@ -40,6 +47,28 @@ export function clip(text: string, max: number): string {
 
 export function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+function pathRoot(prefix: string | undefined, fallback: string): string {
+  const value = (prefix && prefix.trim()) || fallback;
+  return value.replace(/[\\/]+$/, '');
+}
+
+/**
+ * Replace a directory prefix with `.` or `~` only at a path boundary.
+ * `/proj/src` with cwd `/proj` becomes `./src`, not a partial match on `/project`.
+ */
+function replacePathPrefix(text: string, prefix: string, replacement: string): string {
+  if (!prefix || prefix === '.' || prefix === '~' || prefix === '/' || prefix === '\\') return text;
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(^|[\\s"'\`=])${escaped}(?=$|[\\s"'\`\\\\/])`, 'g');
+  return text.replace(pattern, (_match, lead: string) => `${lead}${replacement}`);
+}
+
+export function shortenPaths(text: string, roots: PathRoots = {}): string {
+  const cwd = pathRoot(roots.cwd, process.cwd());
+  const home = pathRoot(roots.home, os.homedir());
+  return replacePathPrefix(replacePathPrefix(text, cwd, '.'), home, '~');
 }
 
 function tokensAfter(command: string, word: RegExp): string[] {
@@ -120,14 +149,14 @@ function argumentText(toolName: string, args: unknown): string | undefined {
   return undefined;
 }
 
-export function workingDetail(toolName: string, args: unknown): string {
-  const summary = clip(oneLine(argumentText(toolName, args) ?? ''), SUMMARY_LIMIT);
+export function workingDetail(toolName: string, args: unknown, roots?: PathRoots): string {
+  const summary = clip(oneLine(shortenPaths(argumentText(toolName, args) ?? '', roots)), SUMMARY_LIMIT);
   if (!summary) return toolName;
   return `${toolName} · ${summary}`;
 }
 
-export function permissionSummary(command: string): string {
-  return clip(oneLine(command), PERMISSION_LIMIT);
+export function permissionSummary(command: string, roots?: PathRoots): string {
+  return clip(oneLine(shortenPaths(command, roots)), PERMISSION_LIMIT);
 }
 
 export function doneDetail(seconds: number, toolCalls: number): string {

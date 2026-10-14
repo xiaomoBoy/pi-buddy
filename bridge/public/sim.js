@@ -1,4 +1,4 @@
-import { ACCENT, STATUS, drawScreen, permissionDetail } from './mascot.js';
+import { ACCENT, STATUS, drawScreen } from './mascot.js';
 
 const boot = JSON.parse(document.getElementById('boot').textContent || '{}');
 const canvas = document.getElementById('screen');
@@ -49,12 +49,14 @@ function wake() {
 function render() {
   const state = sleeping ? 'sleep' : model.state;
   let detail = model.detail;
-  if (state === 'permission') detail = permissionDetail(model.tool, model.summary || model.detail);
   if (state === 'sleep') detail = '闲置 5 分钟 · 摸一下屏幕叫醒';
+  const permission = state === 'permission';
   drawScreen(ctx, state, {
     status: STATUS[state] ?? '',
     detail,
     accent: ACCENT[state],
+    tool: permission ? model.tool : '',
+    summary: permission ? model.summary || model.detail : '',
   });
   const pending = Boolean(model.permissionId) && socket && socket.readyState === WebSocket.OPEN;
   allowBtn.disabled = !pending;

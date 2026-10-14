@@ -254,7 +254,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const askTerminal = (ctx: ExtensionContext, command: string, signal: AbortSignal): Promise<UiResult> => {
-    const summary = permissionSummary(command);
+    const summary = permissionSummary(command, { cwd: ctx.cwd });
     return ctx.ui
       .confirm('P 仔审批', `危险命令：\n\n  ${summary}\n\n允许执行？`, { signal })
       .then(
@@ -279,7 +279,7 @@ export default function (pi: ExtensionAPI) {
   const gate = async (ctx: ExtensionContext, command: string): Promise<ToolCallEventResult | undefined> => {
     const httpAbort = new AbortController();
     const uiAbort = new AbortController();
-    const httpPromise = askDevice('bash', permissionSummary(command), sessionOf(ctx), httpAbort.signal);
+    const httpPromise = askDevice('bash', permissionSummary(command, { cwd: ctx.cwd }), sessionOf(ctx), httpAbort.signal);
     const uiPromise = ctx.hasUI ? askTerminal(ctx, command, uiAbort.signal) : undefined;
 
     if (!uiPromise) {
@@ -352,7 +352,7 @@ export default function (pi: ExtensionAPI) {
       inflight.add(event.toolCallId);
       if (added) toolCount += 1;
       clearIdleTimer();
-      enqueueState('working', workingDetail(event.toolName, event.args), ctx);
+      enqueueState('working', workingDetail(event.toolName, event.args, { cwd: ctx.cwd }), ctx);
     } catch {
       // ignore
     }
