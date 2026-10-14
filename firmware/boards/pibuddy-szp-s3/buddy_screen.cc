@@ -158,10 +158,13 @@ void BuddyScreen::Init(Display* display) {
     make_button(8, kDeep, "允许", true);
     make_button(164, kCoral, "拒绝", false);
 
+    // 项目名可能是中文，用和状态栏一样的字体；右边留给 "P. pi"
     corner_ = lv_label_create(root_);
-    lv_obj_set_style_text_font(corner_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(corner_, font, 0);
     lv_obj_set_style_text_color(corner_, lv_color_hex(kMuted), 0);
-    lv_obj_set_pos(corner_, 10, 6);
+    lv_obj_set_pos(corner_, 10, 4);
+    lv_obj_set_width(corner_, 244);
+    lv_label_set_long_mode(corner_, LV_LABEL_LONG_MODE_DOTS);
     lv_label_set_text(corner_, "");
     lv_obj_add_flag(buttons_, LV_OBJ_FLAG_HIDDEN);
 
@@ -173,11 +176,12 @@ void BuddyScreen::Init(Display* display) {
     lv_obj_set_style_bg_color(hold_, lv_color_hex(kBg), 0);
     lv_obj_set_style_bg_opa(hold_, LV_OPA_COVER, 0);
     lv_obj_remove_flag(hold_, LV_OBJ_FLAG_SCROLLABLE);
-    auto hold_label = lv_label_create(hold_);
-    lv_label_set_text(hold_label, "按住到底 = 允许 · 松开 = 拒绝");
-    lv_obj_set_style_text_color(hold_label, lv_color_hex(kCream), 0);
-    lv_obj_set_pos(hold_label, 16, 0);
+    lv_obj_remove_flag(hold_, LV_OBJ_FLAG_CLICKABLE);
+    hold_label_ = lv_label_create(hold_);
+    lv_obj_set_style_text_color(hold_label_, lv_color_hex(kCream), 0);
+    lv_obj_set_pos(hold_label_, 16, 0);
     hold_bar_ = lv_bar_create(hold_);
+    lv_obj_remove_flag(hold_bar_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(hold_bar_, kWidth - 32, 10);
     lv_obj_set_pos(hold_bar_, 16, 26);
     lv_obj_set_style_bg_color(hold_bar_, lv_color_hex(kBar), LV_PART_MAIN);
@@ -292,6 +296,7 @@ void BuddyScreen::Render(Face face, const std::string& status, const std::string
             lv_obj_set_style_text_font(detail_, font, 0);
             lv_obj_set_style_text_font(buttons_, font, 0);
             lv_obj_set_style_text_font(hold_, font, 0);
+            lv_obj_set_style_text_font(corner_, font, 0);
         }
     }
     lv_obj_set_style_bg_color(accent_, lv_color_hex(accent), 0);
@@ -307,13 +312,14 @@ void BuddyScreen::Render(Face face, const std::string& status, const std::string
     }
 }
 
-void BuddyScreen::SetCorner(const std::string& text) {
+void BuddyScreen::SetCorner(const std::string& text, uint32_t color) {
     if (root_ == nullptr) return;
     DisplayLockGuard lock(display_);
+    lv_obj_set_style_text_color(corner_, lv_color_hex(color), 0);
     lv_label_set_text(corner_, text.c_str());
 }
 
-void BuddyScreen::ShowHold(bool show, int hold_ms) {
+void BuddyScreen::ShowHold(bool show, int hold_ms, const char* label) {
     if (root_ == nullptr) return;
     DisplayLockGuard lock(display_);
     lv_anim_delete(hold_bar_, nullptr);
@@ -321,6 +327,7 @@ void BuddyScreen::ShowHold(bool show, int hold_ms) {
         lv_obj_add_flag(hold_, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    lv_label_set_text(hold_label_, label ? label : "按住到底 = 允许 · 松开 = 拒绝");
     lv_bar_set_value(hold_bar_, 0, LV_ANIM_OFF);
     lv_obj_remove_flag(hold_, LV_OBJ_FLAG_HIDDEN);
     lv_anim_t a;

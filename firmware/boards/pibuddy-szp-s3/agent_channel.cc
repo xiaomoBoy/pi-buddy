@@ -8,6 +8,7 @@
 #include "system_info.h"
 
 #include <cJSON.h>
+#include <cstring>
 #include <esp_app_desc.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -27,6 +28,12 @@ constexpr int64_t kSleepAfterUs = 5LL * 60 * 1000 * 1000;
 constexpr int64_t kPingEveryUs = 15LL * 1000 * 1000;
 constexpr int64_t kPongTimeoutUs = 45LL * 1000 * 1000;
 constexpr int64_t kMemLogEveryUs = 60LL * 1000 * 1000;
+constexpr int64_t kArmDelayUs = 400LL * 1000;       // 请示刚出现的 0.4 秒内的语音不算
+constexpr int kWarnLeftS = 10;                      // 剩这么多秒时再提醒一次
+constexpr int kWarnMinTimeoutS = 20;                // 超时本来就很短的请示不提醒
+// “允许执行”的识别把握至少要这么高（实测正常说话 0.30～0.43，命令词表的门槛是 0.2）；
+// “拒绝”不设门槛，误触发也只是拦下命令
+constexpr float kVoiceAllowMinProb = 0.25f;
 
 constexpr uint32_t kMuted = 0xA9B0B5;
 constexpr uint32_t kTeal = 0x4F90AA;
@@ -35,8 +42,10 @@ constexpr uint32_t kCream = 0xF8F5ED;
 constexpr uint32_t kCoral = 0xE5645A;
 
 // 设备内部的命令，和桥接程序发来的 JSON 一起排进收件箱
-constexpr const char* kCmdAllow = "\x01" "allow";
-constexpr const char* kCmdDeny = "\x01" "deny";
+constexpr const char* kCmdAllow = "\x01" "allow:";   // 后面跟 via
+constexpr const char* kCmdDeny = "\x01" "deny:";
+constexpr const char* kCmdVoiceAllow = "\x01" "voice-allow:";   // 后面跟识别把握
+constexpr const char* kCmdVoiceDeny = "\x01" "voice-deny";
 constexpr const char* kCmdTouch = "\x01" "touch";
 constexpr const char* kCmdClosed = "\x01" "closed";
 constexpr const char* kCmdHoldOn = "\x01" "hold-on";
@@ -49,7 +58,16 @@ std::string JsonString(cJSON* obj, const char* key) {
     return cJSON_IsString(item) ? item->valuestring : "";
 }
 
+bool StartsWith(const std::string& text, const char* prefix) {
+    return text.rfind(prefix, 0) == 0;
+}
+
 }  // namespace
+
+// 由 prepare.py 叠加到小智 custom_wake_word.cc 里的钩子调用
+extern "C" void pibuddy_on_voice_command(const char* action, float prob) {
+    AgentChannel::GetInstance().OnVoiceCommand(action, prob);
+}
 
 void AgentChannel::Start(Display* display) {
     // 后台任务的栈在 PSRAM，读写 flash（包括 NVS）时 PSRAM 不可用会断言重启，
@@ -61,7 +79,7 @@ void AgentChannel::Start(Display* display) {
     }
     screen_.Init(display);
     screen_.OnTouch([this]() { Post(kCmdTouch); });
-    screen_.OnDecision([this](bool allow) { ReplyPermission(allow); });
+    screen_.OnDecision([this](bool allow) { ReplyPermission(allow, Via::Touch); });
     // 栈放 PSRAM，不占紧张的内部内存；NVS 写入要关 cache，所以统一交给主任务做
     xTaskCreatePinnedToCoreWithCaps(TaskEntry, "pibuddy", kTaskStack, this, 3, &task_, tskNO_AFFINITY,
                                     MALLOC_CAP_SPIRAM);
@@ -84,8 +102,16 @@ bool AgentChannel::HasPendingPermission() {
     return !perm_id_.empty();
 }
 
-void AgentChannel::ReplyPermission(bool allow) {
-    Post(allow ? kCmdAllow : kCmdDeny);
+void AgentChannel::ReplyPermission(bool allow, Via via) {
+    const char* name = via == Via::Touch ? "touch" : via == Via::Button ? "button" : "voice";
+    Post(std::string(allow ? kCmdAllow : kCmdDeny) + name);
+}
+
+void AgentChannel::OnVoiceCommand(const char* action, float prob) {
+    std::string name(action);
+    ESP_LOGI(TAG, "voice command %s, prob %.3f", action, prob);
+    if (name == "pibuddy_allow") Post(std::string(kCmdVoiceAllow) + std::to_string(prob));
+    else if (name == "pibuddy_deny") Post(kCmdVoiceDeny);
 }
 
 void AgentChannel::OnBootDown() {
@@ -278,6 +304,9 @@ void AgentChannel::Serve(const std::string& ip, uint16_t port) {
             LogMemory("periodic");
             next_mem = now + kMemLogEveryUs;
         }
+        if (voice_allow_at_us_ != 0 && now >= voice_allow_at_us_) {
+            Decide(true, "voice");
+        }
         Refresh();
     }
 
@@ -299,6 +328,7 @@ void AgentChannel::Serve(const std::string& ip, uint16_t port) {
         ws_.reset();
         perm_id_.clear();
     }
+    voice_allow_at_us_ = 0;
     pairing_ = false;
     authed_ = false;
     ESP_LOGI(TAG, "disconnected");
@@ -313,6 +343,11 @@ void AgentChannel::HandleMessage(const std::string& text) {
     if (text == kCmdTouch) {
         last_activity_us_ = Now();
         sleeping_ = false;
+        // 听到“允许执行”后的等待期里点屏幕（按钮以外的地方），一律当拒绝
+        if (voice_allow_at_us_ != 0) {
+            Decide(false, "touch");
+            return;
+        }
         if (authed_) {
             cJSON* root = cJSON_CreateObject();
             cJSON_AddStringToObject(root, "type", "input");
@@ -322,28 +357,47 @@ void AgentChannel::HandleMessage(const std::string& text) {
         return;
     }
     if (text == kCmdHoldOn || text == kCmdHoldOff) {
+        // 开始按 BOOT 就取消语音的放行，交给按键决定
+        if (text == kCmdHoldOn) {
+            voice_allow_at_us_ = 0;
+            voice_bar_shown_ = false;
+        }
         screen_.ShowHold(text == kCmdHoldOn && HasPendingPermission(), kHoldMs);
         return;
     }
-    if (text == kCmdAllow || text == kCmdDeny) {
-        last_reply_us_ = Now();
-        screen_.ShowHold(false, kHoldMs);
-        std::string id;
+    if (StartsWith(text, kCmdAllow) || StartsWith(text, kCmdDeny)) {
+        bool allow = StartsWith(text, kCmdAllow);
+        Decide(allow, text.c_str() + strlen(allow ? kCmdAllow : kCmdDeny));
+        return;
+    }
+    if (StartsWith(text, kCmdVoiceAllow) || text == kCmdVoiceDeny) {
+        bool allow = text != kCmdVoiceDeny;
+        bool ready;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            id = perm_id_;
-            perm_id_.clear();
+            ready = !perm_id_.empty() && Now() - perm_shown_us_ > kArmDelayUs;
         }
-        if (id.empty()) return;
-        flash_allow_ = text == kCmdAllow;
-        flash_text_ = flash_allow_ ? "已允许，pi 继续执行" : "已拒绝，命令不会执行";
-        flash_until_us_ = Now() + 1500LL * 1000;
-        cJSON* root = cJSON_CreateObject();
-        cJSON_AddStringToObject(root, "type", "permission_reply");
-        cJSON_AddStringToObject(root, "id", id.c_str());
-        cJSON_AddStringToObject(root, "decision", text == kCmdAllow ? "allow" : "deny");
-        SendJson(root);
-        ESP_LOGI(TAG, "permission %s", text == kCmdAllow ? "allowed" : "denied");
+        // 小智自己在说话或在听时不认：免得它的回答里正好有“允许执行”
+        auto device_state = Application::GetInstance().GetDeviceState();
+        const char* skip = !ready ? "no permission on screen"
+                         : device_state != kDeviceStateIdle ? "device busy"
+                         : holding_ ? "BOOT is held"
+                         : nullptr;
+        if (!skip && allow && strtof(text.c_str() + strlen(kCmdVoiceAllow), nullptr) < kVoiceAllowMinProb) {
+            skip = "allow prob too low";
+        }
+        if (skip) {
+            ESP_LOGI(TAG, "voice ignored, %s", skip);
+            return;
+        }
+        if (!allow) {
+            Decide(false, "voice");
+        } else if (voice_allow_at_us_ == 0) {
+            voice_allow_at_us_ = Now() + kVoiceConfirmMs * 1000LL;
+            voice_bar_shown_ = true;
+            screen_.ShowHold(true, kVoiceConfirmMs, "听到允许执行，点屏幕取消");
+            ESP_LOGI(TAG, "voice allow, waiting %d ms for a cancel", kVoiceConfirmMs);
+        }
         return;
     }
 
@@ -378,6 +432,7 @@ void AgentChannel::HandleMessage(const std::string& text) {
         if (state_ != "permission") {
             std::lock_guard<std::mutex> lock(mutex_);
             perm_id_.clear();
+            voice_allow_at_us_ = 0;
         }
         last_activity_us_ = Now();
         sleeping_ = false;
@@ -390,35 +445,75 @@ void AgentChannel::HandleMessage(const std::string& text) {
             perm_id_ = id;
             perm_tool_ = JsonString(root, "tool");
             perm_summary_ = JsonString(root, "summary");
+            perm_project_ = JsonString(root, "project");
             cJSON* q = cJSON_GetObjectItem(root, "queue_len");
             queue_len_ = cJSON_IsNumber(q) ? q->valueint : 0;
             if (fresh) {
                 cJSON* t = cJSON_GetObjectItem(root, "timeout_s");
-                perm_deadline_us_ = Now() + (int64_t)(cJSON_IsNumber(t) ? t->valuedouble : 120) * 1000 * 1000;
+                perm_timeout_s_ = cJSON_IsNumber(t) ? t->valueint : 120;
+                perm_deadline_us_ = Now() + perm_timeout_s_ * 1000000LL;
+                perm_shown_us_ = Now();
+                perm_warned_ = false;
             }
         }
-        if (fresh) PlaySoundWhenIdle("popup");
+        if (fresh) {
+            voice_allow_at_us_ = 0;
+            PlaySoundWhenIdle("popup");
+        }
         last_activity_us_ = Now();
         sleeping_ = false;
     } else if (type == "permission_cancel") {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (JsonString(root, "id") == perm_id_) perm_id_.clear();
+        if (JsonString(root, "id") == perm_id_) {
+            perm_id_.clear();
+            voice_allow_at_us_ = 0;
+        }
     }
     cJSON_Delete(root);
 }
 
+void AgentChannel::Decide(bool allow, const char* via) {
+    voice_allow_at_us_ = 0;
+    voice_bar_shown_ = false;
+    last_reply_us_ = Now();
+    screen_.ShowHold(false, kHoldMs);
+    std::string id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        id = perm_id_;
+        perm_id_.clear();
+    }
+    if (id.empty()) return;
+    flash_allow_ = allow;
+    flash_text_ = allow ? "已允许，pi 继续执行" : "已拒绝，命令不会执行";
+    flash_until_us_ = Now() + 1500LL * 1000;
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "permission_reply");
+    cJSON_AddStringToObject(root, "id", id.c_str());
+    cJSON_AddStringToObject(root, "decision", allow ? "allow" : "deny");
+    cJSON_AddStringToObject(root, "via", via);
+    SendJson(root);
+    ESP_LOGI(TAG, "permission %s via %s", allow ? "allowed" : "denied", via);
+}
+
 void AgentChannel::Refresh() {
     auto device_state = Application::GetInstance().GetDeviceState();
-    std::string perm_id, tool, summary;
+    std::string perm_id, tool, summary, project;
     int queue_len;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         perm_id = perm_id_;
         tool = perm_tool_;
         summary = perm_summary_;
+        project = perm_project_;
         queue_len = queue_len_;
     }
     bool has_perm = authed_ && !perm_id.empty();
+    // 语音确认被别的原因打断（请示被撤、换了一条、断线），收起进度条
+    if (voice_bar_shown_ && voice_allow_at_us_ == 0) {
+        voice_bar_shown_ = false;
+        screen_.ShowHold(false, kHoldMs);
+    }
     if (!has_perm && state_ == "idle" && !sleeping_ && Now() - last_activity_us_ > kSleepAfterUs) {
         sleeping_ = true;
     }
@@ -429,6 +524,7 @@ void AgentChannel::Refresh() {
     uint32_t accent = kMuted;
     bool flashing = !has_perm && Now() < flash_until_us_;
     std::string corner;
+    uint32_t corner_color = kMuted;
     if (pairing_) {
         status = "配对码 " + pair_code_;
         detail = "在 Mac 上运行 pi-buddy-bridge pair " + pair_code_;
@@ -436,11 +532,30 @@ void AgentChannel::Refresh() {
     } else if (has_perm) {
         face = Face::Permission;
         status = tool + " · " + summary;
-        detail = "BOOT：按住允许，短按拒绝";   // 一行最多放 14 个字左右
         accent = kAmber;
         int64_t left = (perm_deadline_us_ - Now()) / 1000000;
-        corner = std::to_string(left > 0 ? left : 0) + "s";
+        if (left < 0) left = 0;
+        bool near_timeout = perm_timeout_s_ >= kWarnMinTimeoutS && left <= kWarnLeftS;
+        // 一行最多放 14 个字左右；平时每 3 秒在按键和语音两种说明之间轮换
+        if (voice_allow_at_us_ != 0) {
+            detail = "听到允许，点屏幕可取消";
+        } else if (near_timeout) {
+            detail = "快超时了，不回答就算拒绝";
+        } else if ((Now() - perm_shown_us_) / 3000000 % 2 == 0) {
+            detail = "BOOT：按住允许，短按拒绝";
+        } else {
+            detail = "也可以说：允许执行 / 拒绝";
+        }
+        if (near_timeout && !perm_warned_) {
+            perm_warned_ = true;
+            PlaySoundWhenIdle("popup");
+        }
+        corner = (project.empty() ? "" : project + " · ") + std::to_string(left) + "s";
         if (queue_len > 0) corner += "  +" + std::to_string(queue_len);
+        if (near_timeout) {
+            corner_color = kCoral;
+            if (Now() / 500000 % 2) corner.clear();   // 闪烁
+        }
     } else if (flashing) {
         face = flash_allow_ ? Face::Done : Face::Idle;
         status = flash_text_;
@@ -467,9 +582,10 @@ void AgentChannel::Refresh() {
         screen_.Render(face, status, detail, accent);
         rendered_ = key;
     }
-    if (corner != corner_) {
-        screen_.SetCorner(corner);
-        corner_ = corner;
+    std::string corner_key = corner + "|" + std::to_string(corner_color);
+    if (corner_key != corner_) {
+        screen_.SetCorner(corner, corner_color);
+        corner_ = corner_key;
     }
     // 有审批时一定显示；否则只在小智待机（没在听、没在说）时显示 P 仔
     bool show = has_perm || ((authed_ || pairing_) && device_state == kDeviceStateIdle);
