@@ -1,13 +1,15 @@
-# pi-buddy 协议 v1
+# pi-buddy 协议 v1.1
 
 桥接程序是唯一的服务端。pi 等智能体的插件通过本机 HTTP 把状态、审批和任务轮询交给桥接程序；实战派设备（或网页模拟器）作为客户端，经 WebSocket 连上同一进程。睡眠不在协议里传输，由设备自己判断。
+
+v1.1 在 v1 上增加配对，向后兼容。已经持有 token 的设备仍然直接发送 `hello`。网页模拟器从本机打开 `/sim` 时拿到 token，不显示配对码，也不发送 `pair_request`。mDNS 的 TXT 记录仍是 `v=1`。
 
 ## 传输
 
 - 默认监听 `0.0.0.0:4317`（IPv4）。可用环境变量 `PI_BUDDY_PORT` 改端口。
 - 插件请使用 `http://127.0.0.1:4317`。只接受来自 `127.0.0.1` 和 `::1` 的插件请求；运行环境把 IPv4 回环报成 `::ffff:127.0.0.1` 时同样视为本机。其他地址返回 `403 {"error":"forbidden"}`。
-- `GET /sim` 以及插件接口 `POST /v1/event`、`POST /v1/permission`、`GET /v1/tasks` 还要检查 `Host`。主机名必须是 `127.0.0.1`、`localhost` 或 `[::1]`，端口不限；缺失或其他主机名返回 `403 {"error":"forbidden"}`。这样可以挡住 DNS 重绑定：恶意域名即便解析到 `127.0.0.1`，浏览器仍会带上那个域名的 `Host`，读不到模拟器里的 token，也不能调用插件接口。
-- `POST /v1/event` 和 `POST /v1/permission` 的 `Content-Type` 必须是 `application/json`，可以带 `charset` 参数（例如 `application/json; charset=utf-8`）。其他类型，包括浏览器跨站简单请求常用的 `text/plain`，返回 `415 {"error":"unsupported_media_type"}`，正文不会被处理。
+- `GET /sim` 以及插件接口 `POST /v1/event`、`POST /v1/permission`、`POST /v1/pair`、`GET /v1/tasks` 还要检查 `Host`。主机名必须是 `127.0.0.1`、`localhost` 或 `[::1]`，端口不限；缺失或其他主机名返回 `403 {"error":"forbidden"}`。这样可以挡住 DNS 重绑定：恶意域名即便解析到 `127.0.0.1`，浏览器仍会带上那个域名的 `Host`，读不到模拟器里的 token，也不能调用插件接口。
+- `POST /v1/event`、`POST /v1/permission` 和 `POST /v1/pair` 的 `Content-Type` 必须是 `application/json`，可以带 `charset` 参数（例如 `application/json; charset=utf-8`）。其他类型，包括浏览器跨站简单请求常用的 `text/plain`，返回 `415 {"error":"unsupported_media_type"}`，正文不会被处理。
 - 设备 WebSocket 路径：`/v1/device`。局域网设备可以连接，不经过插件的回环限制。没有 `Origin` 时仍只做 token 认证（实战派固件不发送 `Origin`）。如果带了 `Origin`（浏览器一定会带），其主机名同样必须是 `127.0.0.1`、`localhost` 或 `[::1]`，否则在握手阶段拒绝，响应 `403`，连接不会建立。网页模拟器从上述主机名打开时，浏览器带上的 `Origin` 可以通过。
 - 每条 WebSocket 消息都是 JSON 对象，并且带字符串字段 `type`。
 
@@ -19,12 +21,59 @@
 
 首次启动时，桥接程序生成随机 token，写入 `~/.pi-buddy/config.json`（文件权限 `600`，目录权限 `700`）。`PI_BUDDY_HOME` 可以改这个目录。命令 `pi-buddy-bridge token` 打印 token。
 
-设备连上 `/v1/device` 后，必须在 5 秒内发送 `hello`，并且 token 正确，否则连接被断开：
+设备连上 `/v1/device` 后，第一条消息可以是 `hello`（已经有 token），也可以是 `pair_request`（还没有 token）。尚未通过 hello 的连接不算「设备在线」。
+
+已经有 token 时，必须在 5 秒内发送 `hello`，并且 token 正确，否则连接被断开：
 
 - token 错误、版本不对或字段缺失：关闭码 `1008`
 - 5 秒内没有完成 hello：关闭码 `4000`
 
-尚未通过 hello 的连接不算「设备在线」。
+### 配对
+
+还没有 token 的设备先发送 `pair_request`。`code` 由设备随机生成，是恰好 6 位的数字字符串，可以有前导 0。
+
+```json
+{"type":"pair_request","v":1,"device_id":"<id>","code":"123456"}
+```
+
+- `v` 必须为 `1`。
+- `device_id` 为非空字符串。
+- `code` 必须匹配 `^[0-9]{6}$`。
+
+字段不合法时关闭码 `1008`（原因 `bad pair request`）。`pair_request` 只能作为认证前的第一条消息，同一条连接只接受一次。
+
+桥接程序记下这条待配对请求：
+
+- 最多保留 5 分钟。发了 `pair_request` 的连接不再适用 5 秒 hello 限制，改为 5 分钟内必须完成后面的 `hello`，否则关闭码 `4000`。这 5 分钟从 `pair_request` 到达时起算，收到 `pair_ok` 后不重新计时。
+- 同时最多 3 条。第 4 条到达时，拒绝最早的那一条：把它从待配对列表去掉，并关闭它的连接（关闭码 `1008`，原因 `pair queue full`）。新的这一条被记下。
+- 连接断开时删掉对应的请求。通过 `hello` 之后，这条连接上若还留着待配对请求，也删掉。
+- 连续错误把待配对列表清空时，只删请求，不断开连接。这些连接仍然要在原来的 5 分钟内发送 `hello`；它们的配对码已经作废，需要重新连接才能再发 `pair_request`。
+
+用户在 Mac 上确认屏幕上的配对码。
+
+`POST /v1/pair`
+
+```json
+{"code":"123456"}
+```
+
+`code` 必须是字符串。本机访问、`Host` 和 `Content-Type` 的规则与其他插件接口相同。命令 `pi-buddy-bridge pair <code>` 向 `http://127.0.0.1:<端口>/v1/pair` 发送这个请求（端口默认 `4317`，可用 `PI_BUDDY_PORT` 修改）。成功时把响应正文打到标准输出；失败时把响应正文打到标准错误，并以非 0 退出。桥接程序没在监听时，命令行会说明连不上。
+
+- 有待配对请求的 `code` 与之相同，且那条连接仍开着：向那条连接发送 `pair_ok`，该请求被消耗，并返回 `200 {"device_id":"<id>"}`。`device_id` 来自对应的 `pair_request`。多条码相同时，配对最早记下的一条。成功后连续错误计数清零。
+- 没有对上：`404 {"error":"not_found"}`。连续 5 次这样的失败后，清空所有待配对请求，连续错误计数回到 0。中间一旦配对成功，计数也回到 0，之后再重新累计。
+- `code` 缺失或不是字符串：`400 {"error":"bad_request"}`。这次不计入上面的连续 5 次。
+
+设备收到 `pair_ok` 后，在同一条连接上发送 `hello` 完成认证。`hello` 的校验与下面相同。
+
+#### 桥接程序 → 设备
+
+`pair_ok`
+
+```json
+{"type":"pair_ok","token":"<token>"}
+```
+
+`token` 就是桥接程序配置里的那一个 token，不是按设备另发的新 token。
 
 ### 设备 → 桥接程序
 
@@ -192,7 +241,7 @@
 
 - 设备断开后，如果已经没有通过认证的设备，所有挂起审批立刻返回 `no_device`。
 - 只断开其中一台、仍有其他设备在线时，审批继续等待。
-- 尚未通过 hello 的连接断开，不影响审批。
+- 尚未通过 hello 的连接断开，不影响审批。如果它还有待配对请求，该请求一并删除，之后再用这个配对码调用 `/v1/pair` 会得到 `404`。
 
 ## 睡眠
 

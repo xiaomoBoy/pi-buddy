@@ -1,8 +1,12 @@
-/** Protocol v1 constants and pure helpers. See docs/protocol.md. */
+/** Protocol v1.1 constants and pure helpers. See docs/protocol.md. */
 
 export const DEFAULT_PORT = 4317;
 export const DEFAULT_HOST = '0.0.0.0';
 export const HELLO_TIMEOUT_MS = 5_000;
+/** A connection that sent `pair_request` has this long to finish `hello`. */
+export const PAIR_TIMEOUT_MS = 5 * 60 * 1000;
+export const MAX_PENDING_PAIRS = 3;
+export const MAX_PAIR_FAILURES = 5;
 export const TASK_POLL_MS = 30_000;
 export const MAX_TIMEOUT_S = 86_400;
 export const MDNS_TYPE = 'pibuddy';
@@ -88,6 +92,11 @@ export function isJsonContentType(header: string | undefined | null): boolean {
   if (!header) return false;
   const media = header.split(';', 1)[0]?.trim().toLowerCase();
   return media === 'application/json';
+}
+
+/** Device pairing codes are exactly six digits, kept as a string so leading zeros survive. */
+export function isPairCode(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9]{6}$/.test(value);
 }
 
 /**

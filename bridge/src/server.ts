@@ -9,10 +9,14 @@ import {
   DEFAULT_HOST,
   DEFAULT_PORT,
   HELLO_TIMEOUT_MS,
+  MAX_PAIR_FAILURES,
+  MAX_PENDING_PAIRS,
   MAX_TIMEOUT_S,
   MDNS_TXT_V,
   MDNS_TYPE,
+  PAIR_TIMEOUT_MS,
   TASK_POLL_MS,
+  isPairCode,
   aggregateSessions,
   isJsonContentType,
   isLocalHttpHost,
@@ -32,6 +36,10 @@ export interface StartOptions {
   /** Publish `_pibuddy._tcp`. Default true. Tests pass false. */
   mdns?: boolean;
   helloTimeoutMs?: number;
+  /** How long a `pair_request` connection may wait before `hello`. Default 5 minutes. */
+  pairTimeoutMs?: number;
+  /** Fired after a `pair_request` is stored. Tests use it to observe the TCP race. */
+  onPairRequest?: (deviceId: string) => void;
   taskPollMs?: number;
   silent?: boolean;
   version?: string;
@@ -130,6 +138,7 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
   const token = options.token;
   const version = options.version ?? readVersion();
   const helloTimeoutMs = options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
+  const pairTimeoutMs = options.pairTimeoutMs ?? PAIR_TIMEOUT_MS;
   const taskPollMs = options.taskPollMs ?? TASK_POLL_MS;
   const silent = options.silent ?? false;
   const log = (...args: unknown[]) => {
@@ -142,6 +151,31 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
   let active: PendingPermission | null = null;
   const taskQueue: string[] = [];
   const taskWaiters: TaskWaiter[] = [];
+
+  interface PendingPair {
+    ws: WebSocket;
+    deviceId: string;
+    code: string;
+  }
+
+  /** Oldest first. Capped at MAX_PENDING_PAIRS; a newer request evicts the earliest. */
+  const pendingPairs: PendingPair[] = [];
+  let pairFailures = 0;
+
+  const removePendingPair = (ws: WebSocket) => {
+    const index = pendingPairs.findIndex((item) => item.ws === ws);
+    if (index >= 0) pendingPairs.splice(index, 1);
+  };
+
+  const rejectOldestPair = () => {
+    const oldest = pendingPairs.shift();
+    if (!oldest) return;
+    try {
+      oldest.ws.close(1008, 'pair queue full');
+    } catch {
+      /* ignore */
+    }
+  };
 
   const broadcast = (message: unknown) => {
     const data = JSON.stringify(message);
@@ -340,14 +374,18 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
     }
 
     const pluginPath =
-      url.pathname === '/v1/event' || url.pathname === '/v1/permission' || url.pathname === '/v1/tasks';
+      url.pathname === '/v1/event' ||
+      url.pathname === '/v1/permission' ||
+      url.pathname === '/v1/pair' ||
+      url.pathname === '/v1/tasks';
     if (!pluginPath) {
       sendJson(res, 404, { error: 'not_found' });
       return;
     }
 
     const methodOk =
-      (method === 'POST' && (url.pathname === '/v1/event' || url.pathname === '/v1/permission')) ||
+      (method === 'POST' &&
+        (url.pathname === '/v1/event' || url.pathname === '/v1/permission' || url.pathname === '/v1/pair')) ||
       (method === 'GET' && url.pathname === '/v1/tasks');
     if (!methodOk) {
       sendJson(res, 405, { error: 'method_not_allowed' });
@@ -408,6 +446,32 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
       sessions.set(key, { source, session, state: body.state, detail });
       broadcastState();
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/v1/pair') {
+      const code = requiredString(body, 'code');
+      if (code === null) {
+        sendJson(res, 400, { error: 'bad_request', message: 'invalid pair' });
+        return;
+      }
+      const index = pendingPairs.findIndex(
+        (item) => item.code === code && item.ws.readyState === WebSocket.OPEN,
+      );
+      if (index < 0) {
+        pairFailures += 1;
+        if (pairFailures >= MAX_PAIR_FAILURES) {
+          pairFailures = 0;
+          pendingPairs.length = 0;
+        }
+        sendJson(res, 404, { error: 'not_found' });
+        return;
+      }
+      const [match] = pendingPairs.splice(index, 1);
+      pairFailures = 0;
+      match!.ws.send(JSON.stringify({ type: 'pair_ok', token }));
+      log(`device paired ${match!.deviceId}`);
+      sendJson(res, 200, { device_id: match!.deviceId });
       return;
     }
 
@@ -482,9 +546,17 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
 
   wss.on('connection', (ws) => {
     let authed = false;
-    const helloTimer = setTimeout(() => {
+    let pairing = false;
+    let helloTimer = setTimeout(() => {
       if (!authed) ws.close(4000, 'hello timeout');
     }, helloTimeoutMs);
+
+    const armHelloTimer = (timeoutMs: number) => {
+      clearTimeout(helloTimer);
+      helloTimer = setTimeout(() => {
+        if (!authed) ws.close(4000, 'hello timeout');
+      }, timeoutMs);
+    };
 
     ws.on('message', (data: RawData, isBinary) => {
       if (isBinary) return;
@@ -501,6 +573,22 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
       }
 
       if (!authed) {
+        if (message.type === 'pair_request' && !pairing) {
+          const deviceId = message.device_id;
+          const code = message.code;
+          if (message.v !== 1 || typeof deviceId !== 'string' || deviceId.length === 0 || !isPairCode(code)) {
+            clearTimeout(helloTimer);
+            ws.close(1008, 'bad pair request');
+            return;
+          }
+          pairing = true;
+          armHelloTimer(pairTimeoutMs);
+          while (pendingPairs.length >= MAX_PENDING_PAIRS) rejectOldestPair();
+          pendingPairs.push({ ws, deviceId, code });
+          log(`device pair request ${deviceId}`);
+          options.onPairRequest?.(deviceId);
+          return;
+        }
         if (message.type !== 'hello') {
           clearTimeout(helloTimer);
           ws.close(1008, 'hello required');
@@ -526,6 +614,7 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
         }
         authed = true;
         clearTimeout(helloTimer);
+        removePendingPair(ws);
         devices.add(ws);
         log(`device online ${deviceId} fw=${fw} board=${board}`);
         ws.send(JSON.stringify({ type: 'hello_ack', v: 1, bridge_version: version }));
@@ -567,6 +656,7 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
 
     ws.on('close', () => {
       clearTimeout(helloTimer);
+      removePendingPair(ws);
       if (!authed) return;
       devices.delete(ws);
       log('device offline');
@@ -629,7 +719,8 @@ export async function startBridge(options: StartOptions): Promise<RunningBridge>
       closed = true;
       failAll('no_device');
       dropWaiters();
-      for (const ws of devices) {
+      pendingPairs.length = 0;
+      for (const ws of wss.clients) {
         try {
           ws.close(1001, 'bridge closing');
         } catch {
