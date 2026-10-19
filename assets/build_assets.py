@@ -16,6 +16,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "tools"))
 import pack  # noqa: E402
+import srpack  # noqa: E402
 import unpack  # noqa: E402
 
 SKIN = {"text_color": "#F8F5ED", "background_color": "#26313A"}
@@ -36,8 +37,12 @@ def main(base, out):
         unpack.unpack(base, files)
         index_path = os.path.join(files, "index.json")
         index = json.load(open(index_path, encoding="utf-8"))
-        if "srmodels" not in index or index.get("multinet_model", {}).get("language") not in (None, "cn"):
-            sys.exit("底包里没有中文 multinet 模型（srmodels + multinet_model）")
+        # 只看 index.json 不够：官方 assets 也有 srmodels，但里面只有唤醒词模型 wn9，
+        # 没有命令词模型，打出来的包听不懂“允许执行”。所以要解开 srmodels 确认有 mn7_cn。
+        srmodels = os.path.join(files, index.get("srmodels", ""))
+        models = [name for name, _ in srpack.unpack(open(srmodels, "rb").read())] if os.path.isfile(srmodels) else []
+        if "mn7_cn" not in models or index.get("multinet_model", {}).get("language") not in (None, "cn"):
+            sys.exit(f"底包里没有中文命令词模型 mn7_cn（srmodels 里有：{'、'.join(models) or '无'}）")
 
         subprocess.run([sys.executable, os.path.join(HERE, "mascot", "gen_emoji.py"), files], check=True)
         index["skin"] = {"light": SKIN, "dark": SKIN}
