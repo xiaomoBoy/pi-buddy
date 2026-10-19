@@ -9,7 +9,7 @@ P 仔形象与音效素材。
 
 ## 打包 assets 分区
 
-需要一个小智 v2.5.x 的 assets.bin 当底包，里面要有中文命令词模型 mn7_cn（字体和语音模型沿用底包）。小智官方发布的 assets 只有唤醒词模型，不能直接用；可以用 [xiaozhi-claude-pixel](https://github.com/xiaomoBoy/xiaozhi-claude-pixel) 的 `bin/assets_claude_mn7.bin`，v1.1 Release 里的 `assets-pibuddy.bin` 就是用它打的。底包不对时脚本会报错退出：
+需要一个小智 v2.5.x 的 assets.bin 当底包，里面要有中文命令词模型 mn7_cn（字体和语音模型沿用底包）。小智官方发布的 assets 只有唤醒词模型，不能直接用；可以用 [xiaozhi-claude-pixel](https://github.com/xiaomoBoy/xiaozhi-claude-pixel) 的 `bin/assets_claude_mn7.bin`，v1.1 Release 里的 `assets-pibuddy.bin` 就是用它打的。底包不对时脚本会报错退出。打包和刷机：
 
 ```bash
 python3 assets/build_assets.py <底包 assets.bin> build/assets_pibuddy.bin
